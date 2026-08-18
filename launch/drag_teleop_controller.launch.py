@@ -129,13 +129,8 @@ def launch_setup(context, *args, **kwargs):
 
     # robot_state_publisher publishes TF and /<ns>/robot_description from the same URDF.
     # TransformBroadcaster 硬编码发布到绝对名 "/tf" 和 "/tf_static"（不受节点 namespace 影响），
-    # 因此显式 remap 到 "/<ns>/tf" 绝对名（注意：目标必须是绝对路径，否则会再叠加节点 ns）。
-    rsp_remappings = []
-    if namespace:
-        rsp_remappings = [
-            ("/tf", f"/{namespace}/tf"),
-            ("/tf_static", f"/{namespace}/tf_static"),
-        ]
+    # 因此使用 "frame_prefix" 参数指定机器人描述文件的 frame 前缀。
+    robot_state_frame_prefix = namespace+"/" if namespace else ""
     nodes.append(Node(
         package="robot_state_publisher",
         executable="robot_state_publisher",
@@ -143,11 +138,11 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
         parameters=[{
             "robot_description": urdf,
+            "frame_prefix": robot_state_frame_prefix,
             "publish_frequency": 100.0,
             "use_tf_static": True,
             "use_sim_time": use_sim_time,
         }],
-        remappings=rsp_remappings,
     ))
 
     # ros2_control_node: controller configuration from THIS package.
@@ -166,6 +161,8 @@ def launch_setup(context, *args, **kwargs):
         config_yaml = os.path.join(
             get_package_share_directory("drag_teleop_controller"),
             "config", "ros2_controller_params.yaml")
+
+    # controller_manager: 输入 controller yaml 配置、带有 ros2_control 的 URDF
     nodes.append(Node(
         package="controller_manager",
         executable="ros2_control_node",
@@ -179,27 +176,22 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     ))
 
-    # spawner 的 controller manager 绝对路径（namespace 下为 /<ns>/controller_manager）
-    # !这里的 "/controller_manager" 不要修改，代码中有硬编码
-    controller_manager_name = (
-        f"{namespace}/controller_manager" if namespace else "/controller_manager")
-
+    # joint_state_broadcaster: 发布 joint_state 主题，用于其他节点订阅。
     nodes.append(Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["joint_state_broadcaster", "--controller-manager", controller_manager_name],
+        namespace=namespace,
+        arguments=["joint_state_broadcaster"],
         parameters=[{"use_sim_time": use_sim_time}],
         output="screen",
     ))
 
-    # 控制器 spawner：参数已通过 CM 配置 yaml 注入，无需 -p 文件。
+    # drag_teleop_controller 控制器 spawner：参数已通过 CM 配置 yaml 注入。
     nodes.append(Node(
         package="controller_manager",
         executable="spawner",
-        arguments=[
-            "drag_teleop_controller",
-            "--controller-manager", controller_manager_name,
-        ],
+        namespace=namespace,
+        arguments=["drag_teleop_controller"],
         parameters=[{"use_sim_time": use_sim_time}],
         output="screen",
     ))

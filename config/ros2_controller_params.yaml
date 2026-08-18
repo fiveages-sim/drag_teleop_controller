@@ -3,16 +3,9 @@
 # 本文件为 controller_manager 与控制器的完整参数。
 # 启动入口：launch/drag_teleop_controller.launch.py（会按 type/hardware 覆盖 joints 等参数）。
 #
-# 参数文件解析规则（rcl_yaml_param_parser）：每一层键都是节点名的一部分，
-# 支持通配符。顶层 /** 匹配任意深度的节点名前缀（正则 (/\\w+)*），
-# 其下子键 controller_manager / drag_teleop_controller 也是节点名：
-#   /**/controller_manager             -> 匹配任意 namespace 下的 CM 节点
-#   /**/drag_teleop_controller-> 匹配任意 namespace 下的控制器节点
-# 匹配成功后参数以裸名（无节点名前缀）注入节点，各自只读取自己关心的参数，
-# 多余参数被忽略（CM 与控制器均允许未声明参数）。
-# 注意：/*（单个星号）只匹配恰好一个路径 token——有 namespace 时可用
-# （如 /drag_controller/controller_manager 匹配 /*/controller_manager），
-# 但无 namespace 时（/controller_manag
+# "/*" 匹配任意 namespace 下的节点，如 "/drag_teleop/controller_manager" 匹配 "/*/controller_manager"，
+# 但无 namespace 时（/controller_manager 仅 1 个 token）会匹配失败，
+# 因此统一使用 /** 以兼容两种场景。
 /**:
   controller_manager:
     ros__parameters:
