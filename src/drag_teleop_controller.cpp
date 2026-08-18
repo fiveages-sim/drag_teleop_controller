@@ -46,6 +46,8 @@ controller_interface::CallbackReturn DragTeleopController::on_init()
       "feedback.kp_param_name", feedback_kp_param_name_);
     feedback_kd_param_name_ = auto_declare<std::string>(
       "feedback.kd_param_name", feedback_kd_param_name_);
+    feedback_hardware_name_ = auto_declare<std::string>(
+      "feedback.hardware_name", feedback_hardware_name_);
     feedback_max_delta_q_ = auto_declare<double>(
       "feedback.max_delta_q", feedback_max_delta_q_);
     feedback_delta_q_rate_ = auto_declare<double>(
@@ -213,6 +215,7 @@ controller_interface::CallbackReturn DragTeleopController::on_configure(
   fb_config.kd = feedback_kd_;
   fb_config.kp_param_name = feedback_kp_param_name_;
   fb_config.kd_param_name = feedback_kd_param_name_;
+  fb_config.hardware_name = feedback_hardware_name_;
   fb_config.max_delta_q = feedback_max_delta_q_;
   fb_config.delta_q_rate = feedback_delta_q_rate_;
   force_feedback_ = std::make_unique<ForceFeedback>(

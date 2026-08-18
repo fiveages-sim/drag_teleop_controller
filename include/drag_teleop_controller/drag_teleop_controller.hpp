@@ -85,6 +85,7 @@ private:
   double feedback_kd_{0.0};          // <=0 = 不改变 kd
   std::string feedback_kp_param_name_{"joint_kp"}; // 硬件 kp 参数名（不同 hardware 可能不同）
   std::string feedback_kd_param_name_{"joint_kd"}; // 硬件 kd 参数名
+  std::string feedback_hardware_name_{"panthera_ht_system"}; // hardware 组件名（kp/kd 参数所在节点）
   double feedback_max_delta_q_{0.5}; // Δq 限幅（rad），力矩上限 = kp×max_delta_q
   double feedback_delta_q_rate_{2.0}; // Δq 斜坡速率（rad/s）
 

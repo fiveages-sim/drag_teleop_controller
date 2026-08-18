@@ -47,6 +47,11 @@ struct ForceFeedbackConfig
   double kd{0.0};              // <=0 = 不改 kd
   std::string kp_param_name{"joint_kp"};  // 硬件 kp 参数名（不同 hardware 可能不同）
   std::string kd_param_name{"joint_kd"};  // 硬件 kd 参数名
+  // hardware 组件名：kp/kd 参数所在节点 = <ns>/<hardware_name>，与 URDF
+  // <ros2_control name="..."> 一致（ros2_control 4.x 起硬件参数声明在独立
+  // hardware 组件节点上）。该节点上找不到 kp 参数时自动回退到
+  // controller_manager（兼容旧版 ros2_control < 4.x）。
+  std::string hardware_name{"panthera_ht_system"};
   double max_delta_q{0.5};     // Δq 限幅（rad），力矩上限 = kp×max_delta_q
   double delta_q_rate{2.0};    // Δq 斜坡速率（rad/s）
 };
@@ -106,6 +111,8 @@ private:
 
   // ---- kp 状态机（非 RT 线程） ----
   std::string controller_manager_name_{"/controller_manager"};
+  std::string kp_node_name_;        // kp 参数目标节点（configure 解析；回退后更新）
+  std::string hardware_node_name_;  // hardware 组件节点（kp 参数默认所在节点）
   struct KpState
   {
     std::atomic<bool> active{false};

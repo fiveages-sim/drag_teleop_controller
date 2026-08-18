@@ -63,6 +63,15 @@ void ForceFeedback::configure()
   const std::string ns = node_->get_namespace();
   controller_manager_name_ =
     (ns.empty() || ns == "/") ? "/controller_manager" : ns + "/controller_manager";
+  // hardware 组件节点：ros2_control 4.x 起硬件参数（joint_kp 等）声明在
+  // 独立 hardware 组件节点上（节点名 = to_lower_case(hardware_info.name)，
+  // namespace 与 CM 相同），而非 controller_manager 节点。
+  hardware_node_name_ =
+    (ns.empty() || ns == "/") ? config_.hardware_name : ns + "/" + config_.hardware_name;
+  // kp 参数目标节点：默认 hardware 组件节点（ros2_control 4.x 起硬件参数
+  // 声明在独立 hardware 组件节点上）；若其上找不到 kp 参数，kpWorkerLoop
+  // 会回退到 controller_manager（兼容旧版 ros2_control < 4.x）。
+  kp_node_name_ = hardware_node_name_;
   // kp 状态机线程：独立节点 + 自建 executor（SyncParametersClient 不能挂在
   // CM executor 的生命周期节点上，参考 gravity_compensation URDF probe 模式）
   kp_state_.thread = std::thread(&ForceFeedback::kpWorkerLoop, this);
@@ -114,7 +123,7 @@ void ForceFeedback::kpWorkerLoop()
   // 用独立节点；不要再手动创建 executor，否则节点会被加入两个 executor 报错）。
   auto client_node = std::make_shared<rclcpp::Node>("drag_teleop_kp_client");
   auto client = std::make_shared<rclcpp::SyncParametersClient>(
-    client_node, controller_manager_name_);
+    client_node, kp_node_name_);
 
   if (!client->wait_for_service(std::chrono::seconds(2)))
   {
@@ -122,9 +131,54 @@ void ForceFeedback::kpWorkerLoop()
       node_->get_logger(),
       "Feedback: parameter services of '%s' not available within 2s; "
       "kp stays unchanged (feedback still active, but stiffness is not boosted)",
-      controller_manager_name_.c_str());
+      kp_node_name_.c_str());
     return;
   }
+
+  // 读回原 kp/kd 保存（兼容任意拖动配置与参数类型：double_array 每关节一个值，
+  // 或 double 全局标量，恢复时保持原类型）。返回 kp 是否读取成功。
+  auto read_kp_kd = [this](rclcpp::SyncParametersClient & c) -> bool
+  {
+    kp_state_.original_kp.clear();
+    kp_state_.original_kd.clear();
+    if (c.has_parameter(config_.kp_param_name))
+    {
+      const auto params = c.get_parameters({config_.kp_param_name});
+      if (!params.empty())
+      {
+        const auto & p = params[0];
+        if (p.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY)
+        {
+          kp_state_.original_kp = p.as_double_array();
+          kp_state_.kp_is_array = true;
+        }
+        else if (p.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE)
+        {
+          kp_state_.original_kp = std::vector<double>{p.as_double()};
+          kp_state_.kp_is_array = false;
+        }
+      }
+    }
+    if (config_.kd > 0.0 && c.has_parameter(config_.kd_param_name))
+    {
+      const auto params = c.get_parameters({config_.kd_param_name});
+      if (!params.empty())
+      {
+        const auto & p = params[0];
+        if (p.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY)
+        {
+          kp_state_.original_kd = p.as_double_array();
+          kp_state_.kd_is_array = true;
+        }
+        else if (p.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE)
+        {
+          kp_state_.original_kd = std::vector<double>{p.as_double()};
+          kp_state_.kd_is_array = false;
+        }
+      }
+    }
+    return !kp_state_.original_kp.empty();
+  };
 
   while (!kp_state_.stop.load())
   {
@@ -133,48 +187,30 @@ void ForceFeedback::kpWorkerLoop()
     {
       if (should)
       {
-        // 激活：先读回原 kp/kd 保存（兼容任意拖动配置与参数类型），再提升到 config_.kp
+        // 激活：先读回原 kp/kd 保存，再提升到 config_.kp
         try
         {
-          kp_state_.original_kp.clear();
-          kp_state_.original_kd.clear();
           kp_state_.original_saved = false;
-          // 参数名可配置（不同 hardware 可能不同）；类型自动判断：
-          // double_array（每关节一个值）或 double（全局标量），恢复时保持原类型。
-          if (client->has_parameter(config_.kp_param_name))
+          if (!read_kp_kd(*client) && kp_node_name_ == hardware_node_name_)
           {
-            const auto params = client->get_parameters({config_.kp_param_name});
-            if (!params.empty())
+            // 反向兜底：hardware 组件节点上找不到 kp 参数 → 回退到
+            // controller_manager（兼容旧版 ros2_control < 4.x，硬件参数
+            // 声明在 CM 节点上）。
+            auto cm_client = std::make_shared<rclcpp::SyncParametersClient>(
+              client_node, controller_manager_name_);
+            if (
+              cm_client->wait_for_service(std::chrono::milliseconds(500)) &&
+              read_kp_kd(*cm_client))
             {
-              const auto & p = params[0];
-              if (p.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY)
-              {
-                kp_state_.original_kp = p.as_double_array();
-                kp_state_.kp_is_array = true;
-              }
-              else if (p.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE)
-              {
-                kp_state_.original_kp = std::vector<double>{p.as_double()};
-                kp_state_.kp_is_array = false;
-              }
-            }
-          }
-          if (config_.kd > 0.0 && client->has_parameter(config_.kd_param_name))
-          {
-            const auto params = client->get_parameters({config_.kd_param_name});
-            if (!params.empty())
-            {
-              const auto & p = params[0];
-              if (p.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY)
-              {
-                kp_state_.original_kd = p.as_double_array();
-                kp_state_.kd_is_array = true;
-              }
-              else if (p.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE)
-              {
-                kp_state_.original_kd = std::vector<double>{p.as_double()};
-                kp_state_.kd_is_array = false;
-              }
+              RCLCPP_WARN(
+                node_->get_logger(),
+                "Feedback ON: '%s' not found on hardware component node '%s'; "
+                "retrying controller_manager '%s' (ros2_control < 4.x declares "
+                "hardware params there)",
+                config_.kp_param_name.c_str(), kp_node_name_.c_str(),
+                controller_manager_name_.c_str());
+              client = cm_client;
+              kp_node_name_ = controller_manager_name_;
             }
           }
           if (!kp_state_.original_kp.empty())
@@ -211,8 +247,8 @@ void ForceFeedback::kpWorkerLoop()
             kp_state_.original_saved = ok;
             RCLCPP_INFO(
               node_->get_logger(),
-              "Feedback ON: %s -> %.2f (%s; hardware applies in ~200ms)",
-              config_.kp_param_name.c_str(), config_.kp,
+              "Feedback ON: %s -> %.2f on '%s' (%s; hardware applies in ~200ms)",
+              config_.kp_param_name.c_str(), config_.kp, kp_node_name_.c_str(),
               ok ? "saved original for restore" : "SET FAILED");
           }
           else
@@ -221,7 +257,7 @@ void ForceFeedback::kpWorkerLoop()
               node_->get_logger(),
               "Feedback ON: '%s' not found on '%s' (or not a number); proceeding "
               "without kp boost (feedback force will be weak)",
-              config_.kp_param_name.c_str(), controller_manager_name_.c_str());
+              config_.kp_param_name.c_str(), kp_node_name_.c_str());
           }
         }
         catch (const std::exception & e)

@@ -116,9 +116,16 @@ $$e_i = q_{master,i} - q_{ref,i}$$
 $$\Delta q_i = -G\cdot\text{sat}(e_i - \delta),\qquad q_{cmd,i} = q_{master,i} + \Delta q_i$$
 
 反馈力矩由电机位置环自动产生：$\tau_{fb} = kp_{fb}\cdot\Delta q_i$。由于拖动模式
-kp≈0.01 时力矩放大率太低（2Nm 需 Δq=200rad），反馈激活期间控制器会经
-`/controller_manager` 参数服务把硬件 `joint_kp` **临时提升**到 `feedback.kp`
-（默认 4.0），退出反馈自动恢复原值（硬件 ~200ms 刷新生效）。
+kp≈0.01 时力矩放大率太低（2Nm 需 Δq=200rad），反馈激活期间控制器会经参数服务把
+硬件 `joint_kp` **临时提升**到 `feedback.kp`（默认 4.0），退出反馈自动恢复原值
+（硬件 ~200ms 刷新生效）。
+
+> **kp 参数所在节点**：ros2_control 4.x（Jazzy）起硬件参数（`joint_kp` 等）声明在
+> **独立 hardware 组件节点**（如 `/drag_teleop/panthera_ht_system`，节点名 =
+> URDF `<ros2_control name="...">` 小写化，namespace 与 CM 相同），而非
+> controller_manager 节点。控制器默认以 `feedback.hardware_name` 构造的
+> `<ns>/<hardware_name>` 为目标节点；该节点上找不到 kp 参数时自动回退到
+> controller_manager（兼容旧版 ros2_control < 4.x）。
 
 反馈激活条件（同时满足，否则 Δq=0 且 kp 保持原值）：
 
@@ -147,7 +154,7 @@ ros2 launch drag_teleop_controller drag_teleop_controller.launch.py feedback:=fa
 
 ```bash
 ros2 topic echo /drag_teleop/feedback_delta_q_debug  # 实时查看 Δq（力矩 = 当前 kp × Δq）
-ros2 param get /drag_teleop/controller_manager joint_kp  # 确认反馈激活时 kp 已提升
+ros2 param get /drag_teleop/panthera_ht_system joint_kp  # 确认反馈激活时 kp 已提升
 ```
 
 ### Launch 参数
@@ -215,6 +222,7 @@ RViz 与 RSP/CM 处于同一 namespace，配置（`config/drag_teleop.rviz`）�
 | `feedback.kd` | 反馈激活期间 joint_kd 临时值（≤0 不改） | `0.0` |
 | `feedback.kp_param_name` | 硬件 kp 参数名（不同 hardware 可能不同） | `joint_kp` |
 | `feedback.kd_param_name` | 硬件 kd 参数名 | `joint_kd` |
+| `feedback.hardware_name` | hardware 组件名（kp/kd 参数所在节点 = `<ns>/<hardware_name>`） | `panthera_ht_system` |
 | `feedback.max_delta_q` | Δq 限幅（rad），力矩上限 = kp×max_delta_q | `0.5` |
 | `feedback.delta_q_rate` | Δq 斜坡速率（rad/s） | `2.0` |
 
