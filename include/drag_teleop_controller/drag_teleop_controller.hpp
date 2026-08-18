@@ -34,6 +34,9 @@
 
 #include "controller_interface/controller_interface.hpp"
 #include "hardware_interface/handle.hpp"
+#include "rclcpp/rclcpp.hpp"
+
+#include "drag_teleop_controller/force_feedback.hpp"
 #include "drag_teleop_controller/gravity_compensation.hpp"
 
 namespace drag_teleop_controller
@@ -72,6 +75,19 @@ private:
   std::vector<double> gravity_vector_{0.0, 0.0, -9.81};
   std::string urdf_param_name_{"robot_description"};
 
+  // ---- 力反馈参数（feedback.*） ----
+  bool feedback_enabled_{false};
+  std::string feedback_joint_state_topic_{"/joint_mapper/feedback_joint_state"};
+  double feedback_input_timeout_{0.2};
+  double feedback_gain_{0.3};        // Δq = −G·e（无量纲，等效刚度 = kp×G）
+  double feedback_deadzone_{0.02};   // |e| 死区（rad），吸收零点偏置/噪声
+  double feedback_kp_{4.0};          // 反馈激活时关节 kp 目标
+  double feedback_kd_{0.0};          // <=0 = 不改变 kd
+  std::string feedback_kp_param_name_{"joint_kp"}; // 硬件 kp 参数名（不同 hardware 可能不同）
+  std::string feedback_kd_param_name_{"joint_kd"}; // 硬件 kd 参数名
+  double feedback_max_delta_q_{0.5}; // Δq 限幅（rad），力矩上限 = kp×max_delta_q
+  double feedback_delta_q_rate_{2.0}; // Δq 斜坡速率（rad/s）
+
   // ---- 动力学 ----
   std::unique_ptr<GravityCompensation> gravity_;
   // joint_names_[i] 在模型中的 JointIndex（SIZE_MAX = 模型缺失，力矩置 0）
@@ -92,6 +108,9 @@ private:
 
   // effort 命令接口缺失时仅警告一次（每次 activate 重置）
   bool effort_missing_warned_{false};
+
+  // ---- 力反馈（位置弹簧，实现见 force_feedback.hpp/.cpp） ----
+  std::unique_ptr<ForceFeedback> force_feedback_;
 };
 
 }  // namespace drag_teleop_controller

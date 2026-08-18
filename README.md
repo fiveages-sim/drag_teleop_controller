@@ -37,6 +37,18 @@
 - 夹爪（`hold_joints`）：`position` 状态必需、命令可选，位置跟随当前值，保持不动作。
 - 模型中没有状态来源的关节（如 mimic 的 `gripper_joint2`）q 置 0，对重力矩影响可忽略。
 
+## 代码结构（解耦）
+
+| 文件 | 职责 |
+|---|---|
+| `src/drag_teleop_controller.cpp` | 控制器生命周期（on_init/configure/activate/update）、接口 claim、重力补偿与力反馈的组装 |
+| `src/gravity_compensation.cpp` + `include/.../gravity_compensation.hpp` | Pinocchio 静态重力矩（URDF → 模型 → RNEA） |
+| `src/force_feedback.cpp` + `include/.../force_feedback.hpp` | 位置弹簧力反馈：订阅 mapper 逆映射、Δq 计算、kp 状态机线程（独立节点 + SyncParametersClient） |
+
+控制器只持有 `std::unique_ptr<GravityCompensation>` 与 `std::unique_ptr<ForceFeedback>`，
+`update()` 中分别调用 `calculateStaticTorques(q)` 与 `update(dt, state_values)`，
+力反馈的 Δq 叠加到 position 命令（`q_master + Δq`）。
+
 ## 依赖
 
 - ROS2: `controller_interface` `hardware_interface` `pluginlib` `rclcpp` `rclcpp_lifecycle`
@@ -90,6 +102,54 @@ ros2 launch drag_teleop_controller drag_teleop_controller.launch.py hardware:=re
 
 kp/kd 经 xacro 写入 URDF hardware 段，硬件接口加载即生效（无需启动后调参数服务器）。
 
+### 力反馈（从臂碰撞回推主臂）
+
+当从臂碰到障碍物无法跟随主臂时，主臂会向操作者施加反向阻力。原理是
+**位置弹簧**：控制器订阅 `teleop-joint-mapper` 逆映射发布的期望位置
+（主臂参考系下的从臂实际位置 `q_ref`，话题 `feedback.joint_state_topic`，
+默认 `/joint_mapper/feedback_joint_state`），计算误差
+
+$$e_i = q_{master,i} - q_{ref,i}$$
+
+超过死区后把主臂位置命令反向偏移（限幅 + 斜坡平滑）：
+
+$$\Delta q_i = -G\cdot\text{sat}(e_i - \delta),\qquad q_{cmd,i} = q_{master,i} + \Delta q_i$$
+
+反馈力矩由电机位置环自动产生：$\tau_{fb} = kp_{fb}\cdot\Delta q_i$。由于拖动模式
+kp≈0.01 时力矩放大率太低（2Nm 需 Δq=200rad），反馈激活期间控制器会经
+`/controller_manager` 参数服务把硬件 `joint_kp` **临时提升**到 `feedback.kp`
+（默认 4.0），退出反馈自动恢复原值（硬件 ~200ms 刷新生效）。
+
+反馈激活条件（同时满足，否则 Δq=0 且 kp 保持原值）：
+
+1. `feedback.enabled: true`（默认）；
+2. 反馈话题在 `feedback.input_timeout`（默认 0.2s）内有新数据——
+   mapper 仅在从臂 FSM 处于 MOVEJ 时发布，因此**从臂停止跟随会自动解除反馈**。
+
+启动：
+
+```bash
+# 与拖动模式相同，默认 feedback.enabled=true（yaml 配置）
+ros2 launch drag_teleop_controller drag_teleop_controller.launch.py hardware:=real \
+  hardware_joint_kp:="0.01, 0.01, 0.01, 0.01, 0.01, 0.01" \
+  hardware_joint_kd:="0.2, 0.2, 0.2, 0.2, 0.2, 0.2"
+
+# 快速关闭（不重启从臂链路）
+ros2 launch drag_teleop_controller drag_teleop_controller.launch.py feedback:=false
+```
+
+调参建议：`feedback.kp` 决定反馈力大小（kp×Δq，kp=4 且 Δq 满偏 0.5rad 时约 2Nm，
+远小于 21/36Nm 限幅）；`feedback.gain` 决定误差→Δq 的灵敏度；`feedback.deadzone`
+吸收主从零点偏置（主臂自然悬停误差，避免常驻阻力）；`feedback.delta_q_rate`
+限制 Δq 变化速率，防止误差突变时猛推。
+
+调试话题（控制器 ns 内，如 `/drag_teleop/feedback_delta_q_debug`，Float64MultiArray）：
+
+```bash
+ros2 topic echo /drag_teleop/feedback_delta_q_debug  # 实时查看 Δq（力矩 = 当前 kp × Δq）
+ros2 param get /drag_teleop/controller_manager joint_kp  # 确认反馈激活时 kp 已提升
+```
+
 ### Launch 参数
 
 | 参数 | 默认值 | 说明 |
@@ -98,6 +158,7 @@ kp/kd 经 xacro 写入 URDF hardware 段，硬件接口加载即生效（无需�
 | `hardware` | `mock_components` | `real` / `real_usb`（ht_ros2_control）\| `mock_components` \| `gz` \| `isaac` |
 | `namespace` | `drag_controller` | 所有节点（RSP/CM/RViz）的 ROS namespace；`/` = 全局 |
 | `rviz` | `false` | 是否启动 RViz2（默认不启动） |
+| `feedback` | `true` | 覆盖 `feedback.enabled`：`true`/`false`；空 = 使用 yaml 值 |
 | `description_package` | `panthera_ht_description` | 描述包：URDF 与关节接口均从该包解析 |
 
 #### 前缀参数（与 ocs2 demo.launch.py 同格式，经 `build_xacro_mappings` 透传）
@@ -140,6 +201,22 @@ RViz 与 RSP/CM 处于同一 namespace，配置（`config/drag_teleop.rviz`）�
 | `max_effort` | 力矩限幅 Nm（空 = 不限幅） | `[21,36,36,21,10,10]×2` |
 | `gravity_vector` | 世界系重力加速度 | `[0, 0, -9.81]` |
 | `urdf_param` | URDF 来源参数 | `robot_description` |
+
+#### 力反馈参数（`feedback.*` 嵌套段）
+
+| 参数 | 说明 | 默认值 |
+|---|---|---|
+| `feedback.enabled` | 是否启用力反馈 | `true` |
+| `feedback.joint_state_topic` | mapper 逆映射话题（绝对名） | `/joint_mapper/feedback_joint_state` |
+| `feedback.input_timeout` | 反馈数据超时（s），超时自动关闭反馈 | `0.2` |
+| `feedback.gain` | Δq = −G·(e−δ) | `0.3` |
+| `feedback.deadzone` | 误差死区（rad） | `0.02` |
+| `feedback.kp` | 反馈激活期间硬件 joint_kp 临时值 | `4.0` |
+| `feedback.kd` | 反馈激活期间 joint_kd 临时值（≤0 不改） | `0.0` |
+| `feedback.kp_param_name` | 硬件 kp 参数名（不同 hardware 可能不同） | `joint_kp` |
+| `feedback.kd_param_name` | 硬件 kd 参数名 | `joint_kd` |
+| `feedback.max_delta_q` | Δq 限幅（rad），力矩上限 = kp×max_delta_q | `0.5` |
+| `feedback.delta_q_rate` | Δq 斜坡速率（rad/s） | `2.0` |
 
 > kp/kd 由硬件接口（`ht_ros2_control`）作为 ROS 参数管理（rqt 可调），
 > 本控制器不写 kp/kd 命令接口，因此无 `use_pd`/`hold_kp`/`hold_kd` 参数。

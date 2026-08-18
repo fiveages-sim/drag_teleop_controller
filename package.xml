@@ -21,6 +21,8 @@
   <depend>rclcpp_lifecycle</depend>
   <depend>pinocchio</depend>
   <depend>urdf</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
 
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>

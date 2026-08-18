@@ -51,3 +51,25 @@
       gravity_vector: [0.0, 0.0, -9.81]
       # URDF 来源参数（controller_manager 注入 / /controller_manager 参数）
       urdf_param: robot_description
+
+      # ---- 力反馈（位置弹簧）----
+      # 从臂碰撞跟不上主臂时，把主臂位置命令反向偏移 Δq，电机位置环
+      # 产生 kp·Δq 的阻力（操作者往碰撞方向推会感到回推）。
+      # 控制器订阅 mapper 逆映射发布的期望位置（主臂参考系 q_ref，话题
+      # /joint_mapper/feedback_joint_state），误差 e = q_master − q_ref
+      # 超过死区后 Δq = −gain·(e−δ)，经 max_delta_q 限幅与 delta_q_rate
+      # 斜坡平滑（防位置命令跳变）。feedback.kp 仅在反馈激活期间临时提升
+      # 硬件 joint_kp（退出自动恢复原值），kp·Δq 即反馈力矩
+      # （如 kp=4 × Δq=0.5 = 2Nm ≪ 21/36Nm 限幅）。
+      feedback:
+        enabled: false
+        joint_state_topic: /joint_mapper/feedback_joint_state
+        input_timeout: 0.2   # 秒；反馈话题超时则自动关闭反馈（不提升 kp）
+        gain: 0.3            # Δq = −gain·(e−δ)
+        deadzone: 0.02       # 死区 rad，抵消主从静态误差
+        kp: 4.0              # 反馈激活期间硬件 joint_kp 临时值
+        kd: 0.0              # <=0 表示不改 kd
+        kp_param_name: joint_kp  # 硬件 kp 参数名（不同 hardware 可能不同，支持 array 或标量）
+        kd_param_name: joint_kd  # 硬件 kd 参数名
+        max_delta_q: 0.5     # Δq 限幅 rad
+        delta_q_rate: 2.0    # Δq 斜坡速率 rad/s

@@ -22,6 +22,7 @@ find_package(Eigen3 REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/gravity_compensation.cpp
+  src/force_feedback.cpp
   src/drag_teleop_controller.cpp
 )
 
@@ -46,6 +47,8 @@ ament_target_dependencies(${PROJECT_NAME}
   pluginlib
   rclcpp
   rclcpp_lifecycle
+  sensor_msgs
+  std_msgs
   urdf
 )
 

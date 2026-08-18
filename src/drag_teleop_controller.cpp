@@ -8,9 +8,6 @@
 #include <tuple>
 #include <unordered_map>
 
-#include <rclcpp/parameter_client.hpp>
-#include <rclcpp/rclcpp.hpp>
-
 #include "pluginlib/class_list_macros.hpp"
 
 PLUGINLIB_EXPORT_CLASS(
@@ -33,6 +30,26 @@ controller_interface::CallbackReturn DragTeleopController::on_init()
     // rclcpp 的 override 只在参数被声明时落地，未声明的参数会被忽略，
     // 因此必须在此声明（值取自 override，缺省为空字符串）。
     auto_declare<std::string>(urdf_param_name_, "");
+
+    // ---- 力反馈参数（feedback.*，嵌套 yaml 自动展开为点分名） ----
+    feedback_enabled_ = auto_declare<bool>("feedback.enabled", feedback_enabled_);
+    feedback_joint_state_topic_ = auto_declare<std::string>(
+      "feedback.joint_state_topic", feedback_joint_state_topic_);
+    feedback_input_timeout_ = auto_declare<double>(
+      "feedback.input_timeout", feedback_input_timeout_);
+    feedback_gain_ = auto_declare<double>("feedback.gain", feedback_gain_);
+    feedback_deadzone_ = auto_declare<double>(
+      "feedback.deadzone", feedback_deadzone_);
+    feedback_kp_ = auto_declare<double>("feedback.kp", feedback_kp_);
+    feedback_kd_ = auto_declare<double>("feedback.kd", feedback_kd_);
+    feedback_kp_param_name_ = auto_declare<std::string>(
+      "feedback.kp_param_name", feedback_kp_param_name_);
+    feedback_kd_param_name_ = auto_declare<std::string>(
+      "feedback.kd_param_name", feedback_kd_param_name_);
+    feedback_max_delta_q_ = auto_declare<double>(
+      "feedback.max_delta_q", feedback_max_delta_q_);
+    feedback_delta_q_rate_ = auto_declare<double>(
+      "feedback.delta_q_rate", feedback_delta_q_rate_);
   }
   catch (const std::exception & e)
   {
@@ -182,6 +199,25 @@ controller_interface::CallbackReturn DragTeleopController::on_configure(
     "Pinocchio model nq=%zu (gravity [%.2f, %.2f, %.2f])",
     joint_names_.size(), hold_joint_names_.size(),
     gravity_->getNumJoints(), gravity_vector_[0], gravity_vector_[1], gravity_vector_[2]);
+
+  // ---- 力反馈（位置弹簧）：订阅 mapper 逆映射反馈 + kp 状态机 ----
+  // 实现已解耦到 ForceFeedback（force_feedback.hpp/.cpp），控制器只负责
+  // 把 feedback.* 参数组装成配置并转发 update 的 Δq。
+  ForceFeedbackConfig fb_config;
+  fb_config.enabled = feedback_enabled_;
+  fb_config.joint_state_topic = feedback_joint_state_topic_;
+  fb_config.input_timeout = feedback_input_timeout_;
+  fb_config.gain = feedback_gain_;
+  fb_config.deadzone = feedback_deadzone_;
+  fb_config.kp = feedback_kp_;
+  fb_config.kd = feedback_kd_;
+  fb_config.kp_param_name = feedback_kp_param_name_;
+  fb_config.kd_param_name = feedback_kd_param_name_;
+  fb_config.max_delta_q = feedback_max_delta_q_;
+  fb_config.delta_q_rate = feedback_delta_q_rate_;
+  force_feedback_ = std::make_unique<ForceFeedback>(
+    get_node(), fb_config, joint_names_);
+  force_feedback_->configure();
 
   return controller_interface::CallbackReturn::SUCCESS;
 }
@@ -345,6 +381,12 @@ controller_interface::CallbackReturn DragTeleopController::on_activate(
 controller_interface::CallbackReturn DragTeleopController::on_deactivate(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {
+  // 停止 kp 状态机线程并恢复原 kp（尽力：线程退出前会走 ACTIVE->INACTIVE 恢复）
+  if (force_feedback_)
+  {
+    force_feedback_->deactivate();
+  }
+
   joint_position_state_interface_.clear();
   hold_position_state_interface_.clear();
   joint_position_command_interface_.clear();
@@ -355,9 +397,8 @@ controller_interface::CallbackReturn DragTeleopController::on_deactivate(
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
-
 controller_interface::return_type DragTeleopController::update(
-  const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
+  const rclcpp::Time & /*time*/, const rclcpp::Duration & period)
 {
   // 1) 读取当前关节位置（名称 → 值）
   std::unordered_map<std::string, double> state_values;
@@ -394,8 +435,18 @@ controller_interface::return_type DragTeleopController::update(
   // 3) 静态重力矩（零速零加速 RNEA）
   const Eigen::VectorXd tau = gravity_->calculateStaticTorques(q);
 
-  // 4) 臂关节：effort = 重力矩（限幅）；position = 当前值（保位，防硬件回零）；
-  //    velocity = 0（速度前馈清零）。命令接口缺失时跳过写入
+  // 3.5) 力反馈（位置弹簧）：e = q_master − q_ref（q_ref 来自 mapper 逆映射，
+  //      主臂参考系下的从臂实际位置）。碰撞时从臂跟不上 → e 增大 →
+  //      Δq = −G·sat(e−δ) 反向偏移位置命令 → 电机位置环产生 kp·Δq 的
+  //      反向力矩（往主臂回来的方向拉）。
+  //      反馈不激活（feedback.enabled=false / 反馈话题超时）时 Δq=0，
+  //      position 保持当前实测（与旧版保位语义完全一致）。
+  //      实现见 ForceFeedback（force_feedback.hpp/.cpp）。
+  const double dt = std::max(period.seconds(), 1.0e-4);
+  force_feedback_->update(dt, state_values);
+
+  // 4) 臂关节：effort = 重力矩（限幅）；position = 当前值（保位，防硬件回零）
+  //    + 力反馈 Δq（位置弹簧）；velocity = 0（速度前馈清零）。命令接口缺失时跳过写入
   //    （effort 缺失仅警告一次，控制器继续以位置保持模式运行）。
   for (size_t i = 0; i < joint_names_.size(); ++i)
   {
@@ -428,7 +479,7 @@ controller_interface::return_type DragTeleopController::update(
     if (joint_position_command_interface_[i])
     {
       std::ignore = joint_position_command_interface_[i]->set_value(
-        state_values[joint_names_[i]]);
+        state_values[joint_names_[i]] + force_feedback_->deltaQ()[i]);
     }
 
     if (joint_velocity_command_interface_[i])
