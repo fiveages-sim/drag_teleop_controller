@@ -1,36 +1,48 @@
 <?xml version="1.0"?>
-<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd"
+            schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>drag_teleop_controller</name>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <description>
-    Standalone drag teleop controller.
-    Computes static gravity torques with Pinocchio RNEA from the URDF model and
-    writes them to the effort command interfaces of the hardware
-    interface, keeping joints at their current positions with optional soft kp/kd.
+    Master/slave drag teleoperation controller for Panthera HT.
+    A single controller plugin that runs as either the master (dragged by the
+    operator, gravity-compensated) or the slave (follows the master) role.
+    Supports position / mix / effort control modes and position / effort
+    force feedback on the master side. Joint mapping is applied before
+    publishing teleop states. Grippers are controlled by
+    adaptive_gripper_controller (spawned by the launch file).
   </description>
   <maintainer email="lihao_0630@qq.com">TDC-LiHao</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
 
   <depend>controller_interface</depend>
   <depend>hardware_interface</depend>
   <depend>pluginlib</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_lifecycle</depend>
-  <depend>pinocchio</depend>
-  <depend>urdf</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>ruckig</depend>
+  <depend>pinocchio</depend>
+  <depend>urdf</depend>
 
+  <exec_depend>rosidl_default_runtime</exec_depend>
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>
+  <exec_depend>adaptive_gripper_controller</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <export>
     <build_type>ament_cmake</build_type>

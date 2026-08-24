@@ -1,43 +1,47 @@
 //
-// Gravity compensation controller for Panthera HT (single / dual arm).
+// Drag teleop controller (master / slave role).
 //
-// Architecture (matches the ht_ros2_control hardware interface contract):
-//   - For each joint in `joints` (arm joints): claim the position state
-//     interface (required) and, when available, the position/velocity/effort
-//     command interfaces (all optional). Every update cycle:
-//       * effort = static gravity torque from Pinocchio RNEA (clamped);
-//         if the effort command interface is missing, a warning is logged
-//         once and the controller keeps running (position-hold only)
-//       * position = current measured position (hold in place, prevents the
-//         hardware interface from treating an unclaimed/zero position command
-//         as a move-to-zero target)
-//       * velocity = 0 (no velocity feedforward)
-//     (kp/kd are managed by the hardware interface as ROS parameters, rqt
-//     tunable; this controller never writes them.)
-//   - For each joint in `hold_joints` (e.g. gripper): position state
-//     (required) + position command (optional), following the current value
-//     (keep in place).
+// A single controller plugin that runs as either the master (dragged by the
+// operator, gravity compensated) or the slave (follows the master) role.
 //
-// Command interfaces are optional: command_interface_configuration() returns
-// ALL (claiming only the interfaces the hardware actually exports), and
-// on_activate() picks position/velocity/effort by name. Declaring a missing
-// interface with INDIVIDUAL would make activation fail (claim throws).
-//
-// The URDF is read from the `urdf_param` parameter (default `robot_description`,
-// injected by controller_manager or read from /controller_manager).
+// Architecture:
+//   - The controller claims the 12 arm joints (position/velocity/effort
+//     states + commands) plus the 2 gripper position states (read-only, for
+//     mapped state publishing). Gripper commands are handled by
+//     adaptive_gripper_controller (spawned by the launch file).
+//   - Teleop states are mapped BEFORE publishing: the master publishes
+//     forward-mapped states (slave joint names), the slave publishes
+//     inverse-mapped states (master joint names), so the receiving side can
+//     use them directly.
+//   - The remote teleop_states topic is subscribed (input_topic, absolute
+//     name) and used as the reference (q_ref / dq_ref / tau_ext_ref).
+//   - Control quantities are computed by ControlCalculator (pure functions)
+//     for every (role x mode x feedback) combination.
+//   - The master can additionally publish ocs2 moveJ + gripper commands
+//     (moveJ_pub:=true) via Ocs2Publisher.
+//   - The slave can smooth the reference with Ruckig (slave.smooth).
 //
 #pragma once
 
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 #include "controller_interface/controller_interface.hpp"
 #include "hardware_interface/handle.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_lifecycle/lifecycle_node.hpp"
+#include "ruckig/ruckig.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
 
-#include "drag_teleop_controller/force_feedback.hpp"
-#include "drag_teleop_controller/gravity_compensation.hpp"
+#include "drag_teleop_controller/control_calculator.hpp"
+#include "drag_teleop_controller/dynamics.hpp"
+#include "drag_teleop_controller/joint_mapper.hpp"
+#include "drag_teleop_controller/ocs2_publisher.hpp"
+#include "drag_teleop_controller/srv/teleop_feedback.hpp"
+#include "drag_teleop_controller/srv/teleop_mode.hpp"
 
 namespace drag_teleop_controller
 {
@@ -67,51 +71,121 @@ public:
 
 private:
   bool loadRobotDescription(std::string & urdf_out);
+  void remoteStateCallback(const sensor_msgs::msg::JointState::SharedPtr message);
+  void modeServiceCallback(
+    const std::shared_ptr<rmw_request_id_t> request_header,
+    const std::shared_ptr<drag_teleop_controller::srv::TeleopMode::Request> request,
+    const std::shared_ptr<drag_teleop_controller::srv::TeleopMode::Response> response);
+  void feedbackServiceCallback(
+    const std::shared_ptr<rmw_request_id_t> request_header,
+    const std::shared_ptr<drag_teleop_controller::srv::TeleopFeedback::Request> request,
+    const std::shared_ptr<drag_teleop_controller::srv::TeleopFeedback::Response> response);
+  /// slave 参考平滑（ruckig，逐关节）
+  void smoothReference(
+    double dt,
+    const std::vector<double> & q_state,
+    const std::vector<double> & v_state,
+    const std::vector<double> & q_ref,
+    const std::vector<double> & dq_ref,
+    std::vector<double> & q_out,
+    std::vector<double> & dq_out);
+  /// 发布 teleop_states（14 关节，映射后）
+  void publishTeleopStates(
+    const rclcpp::Time & time,
+    const std::vector<double> & q_state,
+    const std::vector<double> & v_state,
+    const std::vector<double> & tau_ext,
+    const std::vector<double> & gripper_pos);
 
-  // ---- 参数 ----
-  std::vector<std::string> joint_names_;      // 重力补偿关节（臂关节）
-  std::vector<std::string> hold_joint_names_; // 仅位置保持关节（夹爪等）
-  std::vector<double> max_effort_;            // 力矩限幅（Nm），空 = 不限幅
+  // ---- 参数（on_init 声明） ----
+  std::string role_{"master"};          // master | slave
+  std::string mode_str_{"mix"};         // position | mix | effort
+  std::string feedback_str_{"false"};   // false | position | effort
+  std::string input_topic_{"/drag_teleop_slave/teleop_states"};
+  bool moveJ_pub_{false};
   std::vector<double> gravity_vector_{0.0, 0.0, -9.81};
   std::string urdf_param_name_{"robot_description"};
 
-  // ---- 力反馈参数（feedback.*） ----
-  bool feedback_enabled_{false};
-  std::string feedback_joint_state_topic_{"/joint_mapper/feedback_joint_state"};
-  double feedback_input_timeout_{0.2};
-  double feedback_gain_{0.3};        // Δq = −G·e（无量纲，等效刚度 = kp×G）
-  double feedback_deadzone_{0.02};   // |e| 死区（rad），吸收零点偏置/噪声
-  double feedback_kp_{4.0};          // 反馈激活时关节 kp 目标
-  double feedback_kd_{0.0};          // <=0 = 不改变 kd
-  std::string feedback_kp_param_name_{"joint_kp"}; // 硬件 kp 参数名（不同 hardware 可能不同）
-  std::string feedback_kd_param_name_{"joint_kd"}; // 硬件 kd 参数名
-  std::string feedback_hardware_name_{"panthera_ht_system"}; // hardware 组件名（kp/kd 参数所在节点）
-  double feedback_max_delta_q_{0.5}; // Δq 限幅（rad），力矩上限 = kp×max_delta_q
-  double feedback_delta_q_rate_{2.0}; // Δq 斜坡速率（rad/s）
+  // master 段
+  std::vector<std::string> master_joints_;
+  std::vector<double> master_max_effort_;
+  std::string master_publish_topic_{"teleop_states"};
+  FeedbackParams feedback_params_;
+  Ocs2PublisherConfig ocs2_config_;
+  std::vector<std::string> gripper_joints_param_;  // ocs2_cmd.gripper_joints
+  std::vector<std::string> gripper_topics_param_;  // ocs2_cmd.gripper_topics
 
-  // ---- 动力学 ----
-  std::unique_ptr<GravityCompensation> gravity_;
-  // joint_names_[i] 在模型中的 JointIndex（SIZE_MAX = 模型缺失，力矩置 0）
+  // slave 段
+  std::vector<std::string> slave_joints_;
+  std::vector<double> slave_max_effort_;
+  std::string slave_publish_topic_{"teleop_states"};
+  ImpedanceParams impedance_params_;
+  bool smooth_enabled_{false};
+  double smooth_max_velocity_{3.0};
+  double smooth_max_acceleration_{30.0};
+  double smooth_max_jerk_{300.0};
+
+  // mapper 段
+  JointMappingConfig mapper_config_;
+
+  // ---- 解析后的本侧配置（on_configure 填充） ----
+  std::vector<std::string> joints_;        // 本侧 12 臂关节
+  std::vector<double> max_effort_;         // 本侧力矩限幅
+  std::string publish_topic_;              // 本侧发布话题（相对名）
+  std::vector<std::string> gripper_joints_;  // 本侧夹爪关节（只读状态，2 个）
+
+  // ---- 模式（服务可切换，mutex 保护） ----
+  std::mutex mode_mutex_;
+  ControlMode control_mode_{ControlMode::Mix};
+  FeedbackMode feedback_mode_{FeedbackMode::None};
+
+  // ---- 映射 / 动力学 ----
+  std::unique_ptr<JointMapper> mapper_;
+  std::unique_ptr<Dynamics> dynamics_;
+  // joints_[i] 在模型中的 JointIndex（SIZE_MAX = 模型缺失，力矩置 0）
   std::vector<size_t> model_joint_indices_;
 
   // ---- 借用的硬件接口（on_activate 时填充） ----
-  // 状态接口必需（reference_wrapper）；命令接口可选（原始指针，缺失为
-  // nullptr，update 中跳过写入）。指针在 activate 期间有效（LoanedCommandInterface
-  // 由 controller_manager 管理生命周期）。
   std::vector<std::reference_wrapper<hardware_interface::LoanedStateInterface>>
-    joint_position_state_interface_;
+    position_state_;
+  // velocity/effort 状态可选（缺失为 nullptr，读取时置 0）
+  std::vector<hardware_interface::LoanedStateInterface *> velocity_state_;
+  std::vector<hardware_interface::LoanedStateInterface *> effort_state_;
+  std::vector<hardware_interface::LoanedCommandInterface *> position_cmd_;
+  std::vector<hardware_interface::LoanedCommandInterface *> velocity_cmd_;
+  std::vector<hardware_interface::LoanedCommandInterface *> effort_cmd_;
   std::vector<std::reference_wrapper<hardware_interface::LoanedStateInterface>>
-    hold_position_state_interface_;
-  std::vector<hardware_interface::LoanedCommandInterface *> joint_position_command_interface_;
-  std::vector<hardware_interface::LoanedCommandInterface *> joint_velocity_command_interface_;
-  std::vector<hardware_interface::LoanedCommandInterface *> joint_effort_command_interface_;
-  std::vector<hardware_interface::LoanedCommandInterface *> hold_position_command_interface_;
+    gripper_position_state_;
+  // 本侧是否有 effort 状态接口（无则 τ_ext 用 τ_cmd 代替）
+  bool has_effort_state_{true};
 
-  // effort 命令接口缺失时仅警告一次（每次 activate 重置）
-  bool effort_missing_warned_{false};
+  // ---- 订阅 / 发布 ----
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr remote_sub_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr state_pub_;
+  std::mutex remote_mutex_;
+  std::map<std::string, double> remote_positions_;
+  std::map<std::string, double> remote_velocities_;
+  std::map<std::string, double> remote_efforts_;
+  bool remote_received_{false};
 
-  // ---- 力反馈（位置弹簧，实现见 force_feedback.hpp/.cpp） ----
-  std::unique_ptr<ForceFeedback> force_feedback_;
+  // ---- 服务 ----
+  rclcpp::Service<drag_teleop_controller::srv::TeleopMode>::SharedPtr mode_service_;
+  rclcpp::Service<drag_teleop_controller::srv::TeleopFeedback>::SharedPtr feedback_service_;
+
+  // ---- ocs2 发布（master + moveJ_pub） ----
+  std::unique_ptr<Ocs2Publisher> ocs2_pub_;
+
+  // ---- ruckig 平滑（slave + smooth.enabled） ----
+  std::vector<ruckig::InputParameter<1>> ruckig_inputs_;
+  std::vector<ruckig::OutputParameter<1>> ruckig_outputs_;
+  std::vector<double> smooth_pos_;  // 平滑后位置（12）
+  std::vector<double> smooth_vel_;  // 平滑后速度（12）
+  bool smooth_initialized_{false};
+
+  // ---- q̈ 数值微分（低通） ----
+  std::vector<double> prev_velocity_;
+  std::vector<double> accel_;
+  bool accel_initialized_{false};
 };
 
 }  // namespace drag_teleop_controller

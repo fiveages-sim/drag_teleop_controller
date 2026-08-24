@@ -1,8 +1,11 @@
 //
-// Pinocchio-based gravity compensation for Panthera HT.
+// Pinocchio-based dynamics for drag teleop (master / slave).
 //
-// Builds a Pinocchio model from a URDF string and computes static gravity
-// torques via RNEA with zero velocity / zero acceleration.
+// Builds a Pinocchio model from a URDF string and provides:
+//   - static gravity torques:        tau_G(q)      = rnea(q, 0, 0)
+//   - full model torques:            tau_model(q)  = M(q)a + C(q,v)v + G(q)
+// The slave uses tau_model to estimate external torques:
+//   tau_ext = tau_state - tau_model
 //
 #pragma once
 
@@ -22,19 +25,24 @@
 namespace drag_teleop_controller
 {
 
-/// 基于 Pinocchio 的重力补偿动力学封装（静态重力矩）。
-class GravityCompensation
+/// 基于 Pinocchio 的动力学封装（重力矩 / 完整模型力矩）。
+class Dynamics
 {
 public:
   /// @param urdf_string 完整 URDF XML（如 /robot_description 参数内容）
   /// @param gravity 世界系重力加速度 [gx, gy, gz]（默认 [0, 0, -9.81]；
   ///               双臂 body_rpy 非零时需按安装方向旋转）
-  explicit GravityCompensation(
+  explicit Dynamics(
     const std::string & urdf_string,
     const std::vector<double> & gravity = {0.0, 0.0, -9.81});
 
-  /// 对给定关节位置计算静态重力矩（模型 nq 维输入，nv 维输出）
-  Eigen::VectorXd calculateStaticTorques(const Eigen::VectorXd & q) const;
+  /// 静态重力矩（零速度零加速度 RNEA），模型 nq 维输入，nv 维输出。
+  Eigen::VectorXd calculateGravity(const Eigen::VectorXd & q) const;
+
+  /// 完整模型力矩 tau_model = M(q)a + C(q,v)v + G(q)。
+  Eigen::VectorXd calculateModelTorques(
+    const Eigen::VectorXd & q, const Eigen::VectorXd & v,
+    const Eigen::VectorXd & a) const;
 
   const pinocchio::Model & getModel() const { return model_; }
   size_t getNumJoints() const { return model_.nq; }
@@ -45,4 +53,4 @@ private:
   mutable pinocchio::Data data_;
 };
 
-}  // namespace gravity_compensation
+}  // namespace drag_teleop_controller

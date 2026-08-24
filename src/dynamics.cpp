@@ -1,19 +1,19 @@
 //
-// GravityCompensation implementation (Pinocchio RNEA).
+// Dynamics implementation (Pinocchio RNEA).
 //
-#include "drag_teleop_controller/gravity_compensation.hpp"
+#include "drag_teleop_controller/dynamics.hpp"
 
 #include <stdexcept>
 
 namespace drag_teleop_controller
 {
 
-GravityCompensation::GravityCompensation(
+Dynamics::Dynamics(
   const std::string & urdf_string, const std::vector<double> & gravity)
 {
   if (urdf_string.empty())
   {
-    throw std::invalid_argument("GravityCompensation: empty URDF string");
+    throw std::invalid_argument("Dynamics: empty URDF string");
   }
 
   pinocchio::urdf::buildModelFromXML(urdf_string, model_);
@@ -26,8 +26,7 @@ GravityCompensation::GravityCompensation(
   }
 }
 
-Eigen::VectorXd GravityCompensation::calculateStaticTorques(
-  const Eigen::VectorXd & q) const
+Eigen::VectorXd Dynamics::calculateGravity(const Eigen::VectorXd & q) const
 {
   return pinocchio::rnea(
     model_, data_, q,
@@ -35,4 +34,11 @@ Eigen::VectorXd GravityCompensation::calculateStaticTorques(
     Eigen::VectorXd::Zero(model_.nv));
 }
 
-}  // namespace gravity_compensation
+Eigen::VectorXd Dynamics::calculateModelTorques(
+  const Eigen::VectorXd & q, const Eigen::VectorXd & v,
+  const Eigen::VectorXd & a) const
+{
+  return pinocchio::rnea(model_, data_, q, v, a);
+}
+
+}  // namespace drag_teleop_controller
