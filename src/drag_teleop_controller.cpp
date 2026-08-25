@@ -26,10 +26,7 @@ controller_interface::CallbackReturn DragTeleopController::on_init()
   {
     // ---- 启动参数 ----
     role_ = auto_declare<std::string>("role", role_);
-    mode_str_ = auto_declare<std::string>("mode", mode_str_);
-    feedback_str_ = auto_declare<std::string>("feedback", feedback_str_);
     input_topic_ = auto_declare<std::string>("input_topic", input_topic_);
-    moveJ_pub_ = auto_declare<bool>("moveJ_pub", moveJ_pub_);
     gravity_vector_ = auto_declare<std::vector<double>>(
       "gravity_vector", gravity_vector_);
     // robot_description 通过 --params-file（launch 写入的控制器参数文件）传入：
@@ -38,12 +35,16 @@ controller_interface::CallbackReturn DragTeleopController::on_init()
     auto_declare<std::string>(urdf_param_name_, "");
 
     // ---- master 段 ----
+    master_control_mode_ = auto_declare<std::string>(
+      "master.control.mode", master_control_mode_);
+    master_feedback_type_ = auto_declare<std::string>(
+      "master.feedback.type", master_feedback_type_);
     master_joints_ = auto_declare<std::vector<std::string>>(
       "master.joints", master_joints_);
     master_max_effort_ = auto_declare<std::vector<double>>(
       "master.max_effort", master_max_effort_);
     master_publish_topic_ = auto_declare<std::string>(
-      "master.publish_topic", master_publish_topic_);
+      "master.output_topic", master_publish_topic_);
     feedback_params_.gain = auto_declare<std::vector<double>>(
       "master.feedback.position.gain", {});
     feedback_params_.dead_zone = auto_declare<std::vector<double>>(
@@ -54,24 +55,27 @@ controller_interface::CallbackReturn DragTeleopController::on_init()
       "master.feedback.effort.gain", {});
     feedback_params_.max_ext_effort = auto_declare<std::vector<double>>(
       "master.feedback.effort.max_ext_effort", {});
+    ocs2_enabled_ = auto_declare<bool>("master.ocs2_cmd.enabled", ocs2_enabled_);
     ocs2_config_.pub_rate = auto_declare<double>(
       "master.ocs2_cmd.pub_rate", ocs2_config_.pub_rate);
     ocs2_config_.move_j.joints = auto_declare<std::vector<std::string>>(
       "master.ocs2_cmd.move_j.joints", {});
     ocs2_config_.move_j.cmd_topic = auto_declare<std::string>(
       "master.ocs2_cmd.move_j.cmd_topic", "");
-    gripper_joints_param_ = auto_declare<std::vector<std::string>>(
-      "master.ocs2_cmd.gripper_joints", {});
-    gripper_topics_param_ = auto_declare<std::vector<std::string>>(
-      "master.ocs2_cmd.gripper_topics", {});
+    master_gripper_joints_ = auto_declare<std::vector<std::string>>(
+      "master.gripper.gripper_joints", {});
 
     // ---- slave 段 ----
+    slave_control_type_ = auto_declare<std::string>(
+      "slave.control.type", slave_control_type_);
     slave_joints_ = auto_declare<std::vector<std::string>>(
       "slave.joints", slave_joints_);
     slave_max_effort_ = auto_declare<std::vector<double>>(
       "slave.max_effort", slave_max_effort_);
     slave_publish_topic_ = auto_declare<std::string>(
-      "slave.publish_topic", slave_publish_topic_);
+      "slave.output_topic", slave_publish_topic_);
+    slave_gripper_joints_ = auto_declare<std::vector<std::string>>(
+      "slave.gripper.joints", {});
     impedance_params_.kp = auto_declare<std::vector<double>>(
       "slave.control.effort.kp", {});
     impedance_params_.kd = auto_declare<std::vector<double>>(
@@ -160,6 +164,11 @@ controller_interface::CallbackReturn DragTeleopController::on_configure(
       "Parameter 'role' must be 'master' or 'slave', got '%s'", role_.c_str());
     return controller_interface::CallbackReturn::ERROR;
   }
+  // 新参数结构：控制模式按角色取自 master.control.mode / slave.control.type，
+  // 反馈类型取自 master.feedback.type，ocs2 开关取自 master.ocs2_cmd.enabled。
+  mode_str_ = (role_ == "master") ? master_control_mode_ : slave_control_type_;
+  feedback_str_ = master_feedback_type_;
+  moveJ_pub_ = ocs2_enabled_;
   if (!ControlCalculator::parseMode(mode_str_, control_mode_))
   {
     RCLCPP_ERROR(
@@ -209,13 +218,26 @@ controller_interface::CallbackReturn DragTeleopController::on_configure(
     return controller_interface::CallbackReturn::ERROR;
   }
 
-  // 夹爪：mapper.master_joints 中不在本侧臂关节列表中的关节（只读状态）
+  // 夹爪：优先取本角色配置段（master.gripper.gripper_joints /
+  // slave.gripper.joints）；未配置时回退为 mapper.master_joints 中不在
+  // 本侧臂关节列表中的关节。夹爪命令接口由本控制器直接 claim：
+  //   master：position 保位（跟随本侧实测），velocity/effort 写 0；
+  //   slave：position 跟随主臂夹爪状态（映射后），velocity/effort 写 0。
   gripper_joints_.clear();
-  for (const auto & name : mapper_config_.master_joints)
+  const auto & configured_grippers =
+    (role_ == "master") ? master_gripper_joints_ : slave_gripper_joints_;
+  if (!configured_grippers.empty())
   {
-    if (std::find(joints_.begin(), joints_.end(), name) == joints_.end())
+    gripper_joints_ = configured_grippers;
+  }
+  else
+  {
+    for (const auto & name : mapper_config_.master_joints)
     {
-      gripper_joints_.push_back(name);
+      if (std::find(joints_.begin(), joints_.end(), name) == joints_.end())
+      {
+        gripper_joints_.push_back(name);
+      }
     }
   }
 
@@ -284,8 +306,12 @@ controller_interface::CallbackReturn DragTeleopController::on_configure(
     input_topic_, rclcpp::QoS(10).reliable().transient_local(),
     std::bind(
       &DragTeleopController::remoteStateCallback, this, std::placeholders::_1));
+  // 发布 QoS 必须与订阅端一致（RELIABLE + TRANSIENT_LOCAL）：DDS 要求
+  // 发布方 durability ≥ 订阅方请求值，若发布端用默认 VOLATILE，
+  // 对端的 TRANSIENT_LOCAL 订阅将无法匹配（收不到任何消息）。
+  // TRANSIENT_LOCAL 同时提供 latched 效果：后启动的一侧立即获得最近一帧状态。
   state_pub_ = get_node()->create_publisher<sensor_msgs::msg::JointState>(
-    publish_topic_, 10);
+    publish_topic_, rclcpp::QoS(10).reliable().transient_local());
 
   // ---- 模式切换服务 ----
   mode_service_ = get_node()->create_service<drag_teleop_controller::srv::TeleopMode>(
@@ -300,19 +326,12 @@ controller_interface::CallbackReturn DragTeleopController::on_configure(
         &DragTeleopController::feedbackServiceCallback, this,
         std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
-  // ---- ocs2 发布（master + moveJ_pub） ----
+  // ---- ocs2 moveJ 发布（仅 master 且 master.ocs2_cmd.enabled:=true） ----
+  // 夹爪不再走话题发布：命令接口由本控制器直接 claim 并写入（见
+  // command_interface_configuration / update）。因此本 launch 不得再 spawn
+  // AdaptiveGripperController，否则夹爪命令接口被占用导致其 configure 失败。
   if (role_ == "master" && moveJ_pub_)
   {
-    ocs2_config_.gripper.clear();
-    const size_t g = std::min(
-      gripper_joints_param_.size(), gripper_topics_param_.size());
-    for (size_t i = 0; i < g; ++i)
-    {
-      Ocs2GripperConfig gc;
-      gc.joint = gripper_joints_param_[i];
-      gc.cmd_topic = gripper_topics_param_[i];
-      ocs2_config_.gripper.push_back(gc);
-    }
     ocs2_pub_ = std::make_unique<Ocs2Publisher>(get_node(), ocs2_config_, *mapper_);
     ocs2_pub_->configure();
   }
@@ -347,9 +366,13 @@ controller_interface::CallbackReturn DragTeleopController::on_configure(
 controller_interface::InterfaceConfiguration
 DragTeleopController::command_interface_configuration() const
 {
-  // INDIVIDUAL：只 claim 12 臂关节命令接口（不 claim 夹爪，避免与
-  // adaptive_gripper_controller 冲突）。统一声明 position/velocity/effort
-  // 三个接口（panthera_ht 硬件均导出），on_activate 按 mode 校验所需接口。
+  // INDIVIDUAL：claim 12 臂关节命令接口 + 夹爪命令接口。统一声明
+  // position/velocity/effort 三个接口（panthera_ht 硬件均导出），
+  // on_activate 按 mode 校验所需接口。
+  // 夹爪：position 必需（master 保位 / slave 跟随主臂）。velocity/effort
+  // 不在此声明——interfaces.xacro 中夹爪仅导出 position 命令接口，声明
+  // 不存在的接口会导致资源分配失败；若硬件将来导出，on_activate 会按名
+  // 挑选并写 0。
   controller_interface::InterfaceConfiguration config;
   config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
   const auto & joints = (role_ == "master") ? master_joints_ : slave_joints_;
@@ -358,6 +381,11 @@ DragTeleopController::command_interface_configuration() const
     config.names.push_back(name + "/position");
     config.names.push_back(name + "/velocity");
     config.names.push_back(name + "/effort");
+  }
+  const auto & grippers = (role_ == "master") ? master_gripper_joints_ : slave_gripper_joints_;
+  for (const auto & name : grippers)
+  {
+    config.names.push_back(name + "/position");
   }
   return config;
 }
@@ -374,7 +402,7 @@ DragTeleopController::state_interface_configuration() const
     config.names.push_back(name + "/velocity");
     config.names.push_back(name + "/effort");
   }
-  // 夹爪 position 状态（只读，用于映射发布 teleop_states）
+  // 夹爪 position 状态（只读，用于映射发布 teleop_states 与保位/跟随）
   for (const auto & name : mapper_config_.master_joints)
   {
     if (std::find(joints.begin(), joints.end(), name) == joints.end())
@@ -441,6 +469,9 @@ controller_interface::CallbackReturn DragTeleopController::on_activate(
   velocity_cmd_.clear();
   effort_cmd_.clear();
   gripper_position_state_.clear();
+  gripper_position_cmd_.clear();
+  gripper_velocity_cmd_.clear();
+  gripper_effort_cmd_.clear();
 
   // 臂关节：position 状态必需；velocity/effort 状态可选；命令接口按名挑选
   for (size_t i = 0; i < joints_.size(); ++i)
@@ -461,7 +492,7 @@ controller_interface::CallbackReturn DragTeleopController::on_activate(
     claim_command(base + "/effort", effort_cmd_);
   }
 
-  // 夹爪：position 状态（只读）
+  // 夹爪：position 状态（只读）+ 命令接口（position 必需，vel/effort 可选）
   for (const auto & name : gripper_joints_)
   {
     if (!claim_state(name + "/position", gripper_position_state_))
@@ -472,6 +503,17 @@ controller_interface::CallbackReturn DragTeleopController::on_activate(
         "(position state missing)", name.c_str());
       return controller_interface::CallbackReturn::ERROR;
     }
+    if (!claim_command(name + "/position", gripper_position_cmd_) ||
+      !gripper_position_cmd_.back())
+    {
+      RCLCPP_ERROR(
+        get_node()->get_logger(),
+        "Failed to claim position command interface for gripper joint '%s'",
+        name.c_str());
+      return controller_interface::CallbackReturn::ERROR;
+    }
+    claim_command(name + "/velocity", gripper_velocity_cmd_);
+    claim_command(name + "/effort", gripper_effort_cmd_);
   }
 
   // 校验当前 mode 所需的命令接口
@@ -524,11 +566,13 @@ controller_interface::CallbackReturn DragTeleopController::on_activate(
     }
   }
 
-  // 重置平滑 / q̈ 微分状态
+  // 重置平滑 / q̈ 微分 / τ_ext 滤波状态
   smooth_initialized_ = false;
   accel_initialized_ = false;
   prev_velocity_.assign(joints_.size(), 0.0);
   accel_.assign(joints_.size(), 0.0);
+  tau_ext_filtered_.assign(joints_.size(), 0.0);
+  tau_ext_filter_initialized_ = false;
 
   RCLCPP_INFO(
     get_node()->get_logger(),
@@ -550,6 +594,9 @@ controller_interface::CallbackReturn DragTeleopController::on_deactivate(
   velocity_cmd_.clear();
   effort_cmd_.clear();
   gripper_position_state_.clear();
+  gripper_position_cmd_.clear();
+  gripper_velocity_cmd_.clear();
+  gripper_effort_cmd_.clear();
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
@@ -818,7 +865,7 @@ controller_interface::return_type DragTeleopController::update(
   Eigen::VectorXd a_model = Eigen::VectorXd::Zero(model.nv);
   if (accel_initialized_)
   {
-    constexpr double kAccelAlpha = 0.2;  // 低通系数
+    constexpr double kAccelAlpha = 0.02;  // 低通系数
     for (size_t i = 0; i < n; ++i)
     {
       const double raw = (v_state[i] - prev_velocity_[i]) / dt;
@@ -931,6 +978,27 @@ controller_interface::return_type DragTeleopController::update(
       tau_G_state_vec, feedback_params_, impedance_params_);
   }
 
+  // 7.5) τ_ext 一阶低通（α = 0.02，500Hz 下截止约 1.6Hz）：抑制编码器量化
+  // 噪声与 τ_cmd 回代（无 effort 状态接口时）引入的高频毛刺，避免污染对端
+  // 力反馈回路。滤波状态在 on_activate 重置，首帧直接初始化为当前值。
+  {
+    if (!tau_ext_filter_initialized_)
+    {
+      tau_ext_filtered_ = result.tau_ext;
+      tau_ext_filter_initialized_ = true;
+    }
+    else
+    {
+      constexpr double kTauExtAlpha = 0.02;
+      for (size_t i = 0; i < n; ++i)
+      {
+        tau_ext_filtered_[i] +=
+          kTauExtAlpha * (result.tau_ext[i] - tau_ext_filtered_[i]);
+      }
+    }
+    result.tau_ext = tau_ext_filtered_;
+  }
+
   // 8) 写命令接口（缺失接口跳过）
   for (size_t i = 0; i < n; ++i)
   {
@@ -954,10 +1022,41 @@ controller_interface::return_type DragTeleopController::update(
     }
   }
 
+  // 8.5) 夹爪命令（纯 position 控制，不参与力反馈/力矩控制）：
+  //   master：position 保位（跟随本侧实测状态）；
+  //   slave：position 跟随主臂夹爪状态（远程数据为 master 参考系，
+  //          夹爪名两侧一致，直接按名提取；无远程数据时保位）。
+  //   velocity / effort 恒写 0（接口缺失则跳过）。
+  for (size_t i = 0; i < gripper_joints_.size(); ++i)
+  {
+    double gripper_q_cmd = gripper_pos[i];  // 默认保位
+    if (role_ == "slave")
+    {
+      std::lock_guard<std::mutex> lock(remote_mutex_);
+      const auto it = remote_positions_.find(gripper_joints_[i]);
+      if (it != remote_positions_.end() && std::isfinite(it->second))
+      {
+        gripper_q_cmd = it->second;
+      }
+    }
+    if (gripper_position_cmd_[i])
+    {
+      std::ignore = gripper_position_cmd_[i]->set_value(gripper_q_cmd);
+    }
+    if (i < gripper_velocity_cmd_.size() && gripper_velocity_cmd_[i])
+    {
+      std::ignore = gripper_velocity_cmd_[i]->set_value(0.0);
+    }
+    if (i < gripper_effort_cmd_.size() && gripper_effort_cmd_[i])
+    {
+      std::ignore = gripper_effort_cmd_[i]->set_value(0.0);
+    }
+  }
+
   // 9) 发布 teleop_states（14 关节，映射后）
   publishTeleopStates(time, q_state, v_state, result.tau_ext, gripper_pos);
 
-  // 10) ocs2 发布（master + moveJ_pub）
+  // 10) ocs2 moveJ 发布（master + master.ocs2_cmd.enabled）
   if (ocs2_pub_)
   {
     std::map<std::string, double> local_values;

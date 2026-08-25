@@ -163,18 +163,18 @@ ros2 topic echo /drag_teleop_slave/teleop_states
 ### 真机
 
 ```bash
-# master（低刚度拖动 + 位置力反馈 + 发布 ocs2 moveJ 命令）
+# master（低刚度拖动 + 外部力反馈）
 ros2 launch drag_teleop_controller drag_teleop_controller.launch.py \
-  role:=master hardware:=real mode:=effort feedback:=position moveJ_pub:=false \
-  hardware_joint_kp:="0.01, 0.01, 0.01, 0.01, 0.01, 0.01" \
-  hardware_joint_kd:="0.1, 0.1, 0.1, 0.1, 0.1, 0.1" \
-  hardware_gripper_kp:="0.01" hardware_gripper_kd:=""0.1
+  role:=master hardware:=real mode:=effort feedback:=effort \
+  hardware_joint_kp:="1e-5, 1e-5, 1e-5, 1e-5, 1e-5, 1e-5" \
+  hardware_joint_kd:="1e-5, 1e-5, 1e-5, 1e-5, 1e-5, 1e-5" \
+  hardware_gripper_kp:="1e-5" hardware_gripper_kd:=""1e-5
+```
 
+```bash
 # slave（effort 模式跟随）
 ros2 launch drag_teleop_controller drag_teleop_controller.launch.py \
-  role:=slave hardware:=real mode:=effort \
-  hardware_joint_kp:="0.01, 0.01, 0.01, 0.01, 0.01, 0.01" \
-  hardware_joint_kd:="0.1, 0.1, 0.1, 0.1, 0.1, 0.1" 
+  role:=slave hardware:=real mode:=mix
 ```
 
 ### 模式切换

@@ -5,8 +5,10 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Global Options1
-      Splitter Ratio: 0.5
-    Tree Height: 638
+        - /Status1
+        - /RobotModel1
+      Splitter Ratio: 0.4420103132724762
+    Tree Height: 1143
   - Class: rviz_common/Views
     Expanded:
       - /Current View1
@@ -59,7 +61,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /drag_teleop/robot_description
+        Value: /drag_teleop_slave/robot_description
       Enabled: true
       Links:
         All Links Enabled: true
@@ -189,14 +191,14 @@ Visualization Manager:
         Inertia: false
         Mass: false
       Name: RobotModel
-      TF Prefix: drag_teleop
+      TF Prefix: drag_teleop_slave
       Update Interval: 0
       Value: true
       Visual Enabled: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: drag_teleop/world
+    Fixed Frame: drag_teleop_slave/world
     Frame Rate: 30
   Name: root
   Tools:
@@ -231,12 +233,12 @@ Visualization Manager:
 Window Geometry:
   Displays:
     collapsed: false
-  Height: 789
+  Height: 1417
   Hide Left Dock: false
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd000000010000000000000156000002bbfc0200000002fb000000100044006900730070006c006100790073010000003d000002bb000000c900fffffffb0000000a00560069006500770073000000025000000186000000a400ffffff00000418000002bb00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd00000001000000000000030a000004e9fc0200000002fb000000100044006900730070006c0061007900730100000070000004e90000018600fffffffb0000000a005600690065007700730000000250000001860000013800ffffff00000559000004e900000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
     collapsed: false
-  Width: 1396
+  Width: 2159
   X: 182
-  Y: 55
+  Y: 64

@@ -101,14 +101,16 @@ def launch_setup(context, *args, **kwargs):
             get_package_share_directory("drag_teleop_controller"),
             "config", "ros2_control.yaml")
 
-    # launch 覆盖参数（注入控制器 ros__parameters）
+    # launch 覆盖参数（注入控制器 ros__parameters，键与新 yaml 结构对应）
     overrides = {"role": role}
+    # 控制模式：master -> master.control.mode，slave -> slave.control.type
+    mode_key = "master.control.mode" if role == "master" else "slave.control.type"
     mode = context.launch_configurations.get("mode", "")
     if mode:
-        overrides["mode"] = mode
+        overrides[mode_key] = mode
     feedback = context.launch_configurations.get("feedback", "")
     if feedback:
-        overrides["feedback"] = feedback
+        overrides["master.feedback.type"] = feedback
     input_topic = context.launch_configurations.get("input_topic", "")
     if input_topic and input_topic != "auto":
         overrides["input_topic"] = input_topic
@@ -118,7 +120,7 @@ def launch_setup(context, *args, **kwargs):
         overrides["input_topic"] = "/drag_teleop_{}/teleop_states".format(other_role)
     moveJ_pub = context.launch_configurations.get("moveJ_pub", "")
     if moveJ_pub:
-        overrides["moveJ_pub"] = moveJ_pub == "true"
+        overrides["master.ocs2_cmd.enabled"] = moveJ_pub == "true"
 
     # 参照 ocs2_arm_controller demo.launch.py：用 robot_common_launch 的
     # build_xacro_mappings 统一构建 xacro mappings，自动处理 hardware_/xacro_
@@ -151,9 +153,9 @@ def launch_setup(context, *args, **kwargs):
             "description_package={} \n"
             "===============================================================".format(
                 role, robot, robot_type, hardware, namespace, rviz_enabled,
-                overrides.get("mode", "(yaml)"),
-                overrides.get("feedback", "(yaml)"),
-                overrides.get("moveJ_pub", "(yaml)"),
+                overrides.get(mode_key, "(yaml)"),
+                overrides.get("master.feedback.type", "(yaml)"),
+                overrides.get("master.ocs2_cmd.enabled", "(yaml)"),
                 controller_params, description_package)
         ))
 
@@ -209,23 +211,10 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     ))
 
-    # 夹爪控制器（与 ocs2 启动的从臂夹爪控制器同名同参数）。
-    nodes.append(Node(
-        package="controller_manager",
-        executable="spawner",
-        namespace=namespace,
-        arguments=["left_gripper_controller"],
-        parameters=[{"use_sim_time": use_sim_time}],
-        output="screen",
-    ))
-    nodes.append(Node(
-        package="controller_manager",
-        executable="spawner",
-        namespace=namespace,
-        arguments=["right_gripper_controller"],
-        parameters=[{"use_sim_time": use_sim_time}],
-        output="screen",
-    ))
+    # 夹爪不再由 AdaptiveGripperController 控制：drag_teleop_controller
+    # 直接 claim 夹爪命令接口（master 保位 / slave 跟随主臂夹爪状态，
+    # velocity/effort 写 0）。若再 spawn 夹爪控制器会因命令接口被占用而
+    # configure 失败，故两侧均不启动。
 
     # Optional RViz (default off). Runs inside the same namespace so relative
     # topic names in the config ("tf", "robot_description") follow the robot.
@@ -267,8 +256,10 @@ def generate_launch_description():
                               description="Remote teleop_states topic (absolute name); "
                                           "auto = /drag_teleop_{other_role}/teleop_states"),
         DeclareLaunchArgument("moveJ_pub", default_value="false",
-                              description="Publish ocs2 moveJ + gripper position commands "
-                                          "(master only, true|false)"),
+                              description="Publish ocs2 moveJ commands "
+                                          "(master only, true|false); gripper "
+                                          "position commands are always "
+                                          "published per master.gripper config"),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("namespace", default_value="/drag_teleop",
                               description="Base ROS namespace; role is appended "

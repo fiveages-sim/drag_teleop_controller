@@ -99,26 +99,30 @@ private:
 
   // ---- 参数（on_init 声明） ----
   std::string role_{"master"};          // master | slave
-  std::string mode_str_{"mix"};         // position | mix | effort
-  std::string feedback_str_{"false"};   // false | position | effort
+  std::string mode_str_{"mix"};         // position | mix | effort（on_configure 按 role 取自 master.control.mode / slave.control.type）
+  std::string feedback_str_{"false"};   // false | position | effort（取自 master.feedback.type）
   std::string input_topic_{"/drag_teleop_slave/teleop_states"};
-  bool moveJ_pub_{false};
+  bool moveJ_pub_{false};               // on_configure 取自 master.ocs2_cmd.enabled
   std::vector<double> gravity_vector_{0.0, 0.0, -9.81};
   std::string urdf_param_name_{"robot_description"};
 
   // master 段
+  std::string master_control_mode_{"mix"};   // master.control.mode
+  std::string master_feedback_type_{"false"};  // master.feedback.type
   std::vector<std::string> master_joints_;
   std::vector<double> master_max_effort_;
-  std::string master_publish_topic_{"teleop_states"};
+  std::string master_publish_topic_{"teleop_states"};  // master.output_topic
+  std::vector<std::string> master_gripper_joints_;  // master.gripper.gripper_joints
   FeedbackParams feedback_params_;
-  Ocs2PublisherConfig ocs2_config_;
-  std::vector<std::string> gripper_joints_param_;  // ocs2_cmd.gripper_joints
-  std::vector<std::string> gripper_topics_param_;  // ocs2_cmd.gripper_topics
+  Ocs2PublisherConfig ocs2_config_;                // master.ocs2_cmd 段
+  bool ocs2_enabled_{false};                       // master.ocs2_cmd.enabled
 
   // slave 段
+  std::string slave_control_type_{"mix"};    // slave.control.type
   std::vector<std::string> slave_joints_;
   std::vector<double> slave_max_effort_;
-  std::string slave_publish_topic_{"teleop_states"};
+  std::string slave_publish_topic_{"teleop_states"};  // slave.output_topic
+  std::vector<std::string> slave_gripper_joints_;   // slave.gripper.joints
   ImpedanceParams impedance_params_;
   bool smooth_enabled_{false};
   double smooth_max_velocity_{3.0};
@@ -156,6 +160,12 @@ private:
   std::vector<hardware_interface::LoanedCommandInterface *> effort_cmd_;
   std::vector<std::reference_wrapper<hardware_interface::LoanedStateInterface>>
     gripper_position_state_;
+  // 夹爪命令接口（position 必需；velocity/effort 可选，缺失写 0 跳过）。
+  // master：position 保位（跟随本侧实测），velocity/effort 恒 0；
+  // slave：position 跟随主臂夹爪状态（映射后），velocity/effort 恒 0。
+  std::vector<hardware_interface::LoanedCommandInterface *> gripper_position_cmd_;
+  std::vector<hardware_interface::LoanedCommandInterface *> gripper_velocity_cmd_;
+  std::vector<hardware_interface::LoanedCommandInterface *> gripper_effort_cmd_;
   // 本侧是否有 effort 状态接口（无则 τ_ext 用 τ_cmd 代替）
   bool has_effort_state_{true};
 
@@ -172,7 +182,7 @@ private:
   rclcpp::Service<drag_teleop_controller::srv::TeleopMode>::SharedPtr mode_service_;
   rclcpp::Service<drag_teleop_controller::srv::TeleopFeedback>::SharedPtr feedback_service_;
 
-  // ---- ocs2 发布（master + moveJ_pub） ----
+  // ---- ocs2 moveJ 发布（master + master.ocs2_cmd.enabled） ----
   std::unique_ptr<Ocs2Publisher> ocs2_pub_;
 
   // ---- ruckig 平滑（slave + smooth.enabled） ----
@@ -186,6 +196,10 @@ private:
   std::vector<double> prev_velocity_;
   std::vector<double> accel_;
   bool accel_initialized_{false};
+
+  // ---- τ_ext 低通滤波（发布/反馈前，α = kTauExtAlpha） ----
+  std::vector<double> tau_ext_filtered_;
+  bool tau_ext_filter_initialized_{false};
 };
 
 }  // namespace drag_teleop_controller

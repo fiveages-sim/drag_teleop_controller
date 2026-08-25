@@ -24,15 +24,7 @@ void Ocs2Publisher::configure()
 
   move_j_pub_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>(
     config_.move_j.cmd_topic, 10);
-  gripper_pubs_.clear();
-  gripper_pubs_.reserve(config_.gripper.size());
-  for (const auto & g : config_.gripper)
-  {
-    gripper_pubs_.push_back(
-      node_->create_publisher<std_msgs::msg::Float64>(g.cmd_topic, 10));
-  }
   move_j_data_.assign(config_.move_j.joints.size(), 0.0);
-  gripper_data_.assign(config_.gripper.size(), 0.0);
   data_valid_ = false;
 
   const double rate = std::clamp(config_.pub_rate, 1.0, 1000.0);
@@ -42,9 +34,8 @@ void Ocs2Publisher::configure()
 
   RCLCPP_INFO(
     node_->get_logger(),
-    "Ocs2Publisher: moveJ -> '%s' (%zu joints) @ %.1f Hz, %zu gripper topic(s)",
-    config_.move_j.cmd_topic.c_str(), config_.move_j.joints.size(), rate,
-    gripper_pubs_.size());
+    "Ocs2Publisher: moveJ -> '%s' (%zu joints) @ %.1f Hz",
+    config_.move_j.cmd_topic.c_str(), config_.move_j.joints.size(), rate);
 }
 
 void Ocs2Publisher::deactivate()
@@ -55,7 +46,6 @@ void Ocs2Publisher::deactivate()
     timer_.reset();
   }
   move_j_pub_.reset();
-  gripper_pubs_.clear();
   {
     std::lock_guard<std::mutex> lock(mutex_);
     data_valid_ = false;
@@ -90,24 +80,6 @@ void Ocs2Publisher::update(
     }
     move_j_data_[i] = found->second;
   }
-  // gripper：master 侧夹爪名 → mapper 索引 → slave 参考系名
-  const auto & master_joints = mapper_.master_joints();
-  for (size_t i = 0; i < config_.gripper.size(); ++i)
-  {
-    const auto it = std::find(
-      master_joints.begin(), master_joints.end(), config_.gripper[i].joint);
-    if (it == master_joints.end())
-    {
-      return;
-    }
-    const size_t idx = static_cast<size_t>(it - master_joints.begin());
-    const auto found = slave_values.find(slave_joints[idx]);
-    if (found == slave_values.end())
-    {
-      return;
-    }
-    gripper_data_[i] = found->second;
-  }
   data_valid_ = true;
 }
 
@@ -121,13 +93,6 @@ void Ocs2Publisher::timerCallback()
   std_msgs::msg::Float64MultiArray move_j_msg;
   move_j_msg.data = move_j_data_;
   move_j_pub_->publish(move_j_msg);
-
-  for (size_t i = 0; i < gripper_pubs_.size(); ++i)
-  {
-    std_msgs::msg::Float64 gripper_msg;
-    gripper_msg.data = gripper_data_[i];
-    gripper_pubs_[i]->publish(gripper_msg);
-  }
 }
 
 }  // namespace drag_teleop_controller

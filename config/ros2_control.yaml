@@ -30,24 +30,19 @@
       drag_teleop_controller:
         type: drag_teleop_controller/DragTeleopController
 
-      left_gripper_controller:
-        type: adaptive_gripper_controller/AdaptiveGripperController
-
-      right_gripper_controller:
-        type: adaptive_gripper_controller/AdaptiveGripperController
+  # 说明：夹爪不再由 AdaptiveGripperController 控制（其绝对话题
+  # /<joint>/position_command 在主从同域时会互相串扰，且依赖绝对名
+  # /robot_description 解析限位）。夹爪命令接口由 drag_teleop_controller
+  # 直接 claim：master 保位、slave 跟随主臂夹爪状态，velocity/effort 写 0。
 
   # ==================== drag_teleop 控制器（master/slave 共用） ====================
   drag_teleop_controller:
     ros__parameters:
       # role 由 launch 注入：master | slave
-      # 控制模式：position（仅 slave）| mix | effort
-      mode: mix
-      # 力反馈：false | position | effort（仅 master 生效；必须加引号保持字符串类型）
-      feedback: "false"
+      role: master 
       # 订阅的对侧状态话题（launch 按 role 注入；auto = /drag_teleop_{对侧}/teleop_states）
       input_topic: /drag_teleop_slave/teleop_states
-      # 是否发布 ocs2 moveJ 命令 + 夹爪位置命令（仅 master 生效）
-      moveJ_pub: false
+
       # 世界系重力加速度（双臂 body_rpy 非零时需按安装方向旋转）
       gravity_vector: [0.0, 0.0, -9.81]
       # URDF 来源参数（controller_manager 注入 / /controller_manager 参数）
@@ -71,10 +66,13 @@
         # 力矩限幅（Nm），与 robot.xacro hardware 段 max_torques 一致
         max_effort: [21.0, 36.0, 36.0, 21.0, 10.0, 10.0,
                      21.0, 36.0, 36.0, 21.0, 10.0, 10.0]
-        # 发布的机器人状态话题（相对名，拼接为 /<ns>/teleop_states）
-        publish_topic: teleop_states
+        # 遥操作反馈的话题
+        output_topic: teleop_states #（如果是相对名，拼接为 /<ns>/teleop_states，如果是绝对名，不拼接）
+        control:
+          mode: mix # 控制模式： mix | effort
         # ---- 力反馈参数 ----
         feedback:
+          type: "false"  # false | position | effort （必须加引号保持字符串类型）
           position:  # 基于位置误差的力反馈
             gain: [0.6, 0.6, 0.6, 0.6, 0.6, 0.6,
                    0.6, 0.6, 0.6, 0.6, 0.6, 0.6]
@@ -89,6 +87,7 @@
                              7.0, 12.0, 12.0, 7.0, 3.3, 3.3]
         # ---- ocs2 moveJ / 夹爪命令发布（moveJ_pub:=true 时生效）----
         ocs2_cmd:
+          enabled: false # 是否发布 ocs2 moveJ 命令
           pub_rate: 100.0
           move_j:
             joints:
@@ -105,9 +104,9 @@
               - right_joint5
               - right_joint6
             cmd_topic: /ocs2_arm_controller/target_joint_position
+        gripper:
           # 夹爪发布配置（master 侧夹爪名 → 发布话题，一一对应）
           gripper_joints: [left_gripper_joint, right_gripper_joint]
-          gripper_topics: [/left_gripper_joint/position_command, /right_gripper_joint/position_command]
 
       # ---- 从臂（slave 角色时为本侧）参数 ----
       slave:
@@ -126,8 +125,10 @@
           - right_joint6
         max_effort: [21.0, 36.0, 36.0, 21.0, 10.0, 10.0,
                      21.0, 36.0, 36.0, 21.0, 10.0, 10.0]
-        publish_topic: teleop_states
+        # 遥操作反馈的话题
+        output_topic: teleop_states #（如果是相对名，拼接为 /<ns>/teleop_states，如果是绝对名，不拼接）
         control:
+          type: mix # 控制模式： position | mix | effort
           effort:  # effort 控制模式的阻抗参数
             kp: [30.0, 30.0, 30.0, 30.0, 30.0, 30.0,
                  30.0, 30.0, 30.0, 30.0, 30.0, 30.0]
@@ -138,6 +139,10 @@
           max_velocity: 3.0     # rad/s
           max_acceleration: 30.0  # rad/s^2
           max_jerk: 300.0       # rad/s^3
+        gripper:
+          # 夹爪发布配置（master 侧夹爪名 → 发布话题，一一对应）
+          joints: [left_gripper_joint, right_gripper_joint]
+
 
       # ---- 关节映射（14 关节：12 臂 + 2 夹爪）----
       mapper:
@@ -177,16 +182,3 @@
                 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
         sign: [1, 1, 1, 1, 1, 1, 1,
                1, 1, 1, 1, 1, 1, 1]
-
-  # ==================== 夹爪控制器（与 ocs2 启动配置一致） ====================
-  left_gripper_controller:
-    ros__parameters:
-      joint: left_gripper_joint
-      force_feedback_ratio: 1.0
-      force_threshold: 2.0
-
-  right_gripper_controller:
-    ros__parameters:
-      joint: right_gripper_joint
-      force_feedback_ratio: 1.0
-      force_threshold: 2.0

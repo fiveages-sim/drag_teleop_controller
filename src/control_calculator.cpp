@@ -62,6 +62,8 @@ ControlResult ControlCalculator::calculateSlave(
 
   // 外部力矩估计：τ_ext = τ_state - τ_model
   // （无 effort 状态接口时用 τ_cmd 代替 τ_state，τ_cmd 在下方计算后回填）
+  // 注意：本函数保持纯函数，τ_ext 的一阶低通（α=0.02）由
+  // DragTeleopController::update 在拿到结果后统一施加。
   auto compute_tau_ext = [&]()
   {
     const std::vector<double> & tau_ref =
