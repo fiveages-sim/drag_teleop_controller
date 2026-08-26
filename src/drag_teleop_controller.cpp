@@ -62,6 +62,10 @@ controller_interface::CallbackReturn DragTeleopController::on_init()
       "master.ocs2_cmd.move_j.joints", {});
     ocs2_config_.move_j.cmd_topic = auto_declare<std::string>(
       "master.ocs2_cmd.move_j.cmd_topic", "");
+    ocs2_config_.gripper.joints = auto_declare<std::vector<std::string>>(
+      "master.ocs2_cmd.gripper.joints", {});
+    ocs2_config_.gripper.cmd_topics = auto_declare<std::vector<std::string>>(
+      "master.ocs2_cmd.gripper.cmd_topic", {});
     master_gripper_joints_ = auto_declare<std::vector<std::string>>(
       "master.gripper.gripper_joints", {});
 
@@ -173,7 +177,7 @@ controller_interface::CallbackReturn DragTeleopController::on_configure(
   {
     RCLCPP_ERROR(
       get_node()->get_logger(),
-      "Parameter 'mode' must be 'position'|'mix'|'effort', got '%s'",
+      "Parameter 'mode' must be 'position'|'mit'|'effort', got '%s'",
       mode_str_.c_str());
     return controller_interface::CallbackReturn::ERROR;
   }
@@ -181,7 +185,7 @@ controller_interface::CallbackReturn DragTeleopController::on_configure(
   {
     RCLCPP_ERROR(
       get_node()->get_logger(),
-      "Control mode 'position' is slave-only (master supports mix|effort)");
+      "Control mode 'position' is slave-only (master supports mit|effort)");
     return controller_interface::CallbackReturn::ERROR;
   }
   if (!ControlCalculator::parseFeedback(feedback_str_, feedback_mode_))
@@ -531,13 +535,13 @@ controller_interface::CallbackReturn DragTeleopController::on_activate(
         return controller_interface::CallbackReturn::ERROR;
       }
     }
-    else if (control_mode_ == ControlMode::Mix)
+    else if (control_mode_ == ControlMode::Mit)
     {
       if (!position_cmd_[i] || !velocity_cmd_[i] || !effort_cmd_[i])
       {
         RCLCPP_ERROR(
           get_node()->get_logger(),
-          "Mode 'mix' requires position/velocity/effort command interfaces "
+          "Mode 'mit' requires position/velocity/effort command interfaces "
           "for '%s'", base.c_str());
         return controller_interface::CallbackReturn::ERROR;
       }
@@ -636,7 +640,7 @@ void DragTeleopController::modeServiceCallback(
   {
     response->success = false;
     response->message =
-      "invalid mode '" + request->mode + "' (position|mix|effort)";
+      "invalid mode '" + request->mode + "' (position|mit|effort)";
     return;
   }
   if (role_ == "master" && mode == ControlMode::Position)

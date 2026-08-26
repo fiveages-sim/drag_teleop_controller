@@ -84,7 +84,7 @@ ControlResult ControlCalculator::calculateSlave(
       compute_tau_ext();
       break;
 
-    case ControlMode::Mix:
+    case ControlMode::Mit:
       // 位置 + 速度 + 重力补偿力矩
       r.q_cmd = q_ref;
       r.dq_cmd = dq_ref;
@@ -150,13 +150,13 @@ ControlResult ControlCalculator::calculateMaster(
   switch (mode)
   {
     case ControlMode::Position:
-      // master 不支持 position 模式（仅 slave）；按 mix 语义保位
+      // master 不支持 position 模式（仅 slave）；按 mit 语义保位
       r.q_cmd = q_state;
       r.dq_cmd.assign(n, 0.0);
       r.tau_cmd = tau_G_state;
       break;
 
-    case ControlMode::Mix:
+    case ControlMode::Mit:
       // 位置命令 = 当前 + Δq（位置弹簧由硬件位置环实现）
       r.q_cmd = q_state;
       r.dq_cmd.assign(n, 0.0);
@@ -212,9 +212,9 @@ bool ControlCalculator::parseMode(const std::string & s, ControlMode & out)
     out = ControlMode::Position;
     return true;
   }
-  if (s == "mix")
+  if (s == "mit" || s == "mix") // "mix" 为旧名，向后兼容
   {
-    out = ControlMode::Mix;
+    out = ControlMode::Mit;
     return true;
   }
   if (s == "effort")
@@ -251,8 +251,8 @@ std::string ControlCalculator::modeName(ControlMode mode)
   {
     case ControlMode::Position:
       return "position";
-    case ControlMode::Mix:
-      return "mix";
+    case ControlMode::Mit:
+      return "mit";
     case ControlMode::Effort:
       return "effort";
   }

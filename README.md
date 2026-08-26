@@ -3,7 +3,7 @@
 **主从拖动遥操作控制器包**（Panthera HT 双臂）。
 
 一个控制器插件同时支持 `master`（操作者拖动、重力补偿）与 `slave`（跟随主臂）
-两种角色，通过 `role` 启动参数区分。支持 `position` / `mix` / `effort` 三种
+两种角色，通过 `role` 启动参数区分。支持 `position` / `mit` / `effort` 三种
 控制模式与 `position` / `effort` 两种力反馈（仅 master）。关节映射在发布
 `teleop_states` 前完成；夹爪由 `adaptive_gripper_controller` 控制（launch
 自动 spawn，配置与 ocs2 启动一致）。
@@ -28,7 +28,7 @@
 - **夹爪**：12 臂关节由本控制器控制；夹爪由 `left/right_gripper_controller`
   （`adaptive_gripper_controller`）控制，只做位置映射（master 侧
   `moveJ_pub:=true` 时发布映射后的夹爪位置到 `/<joint>/position_command`）。
-- **模式切换**：`/drag_teleop_{role}/teleop_mode`（position|mix|effort）、
+- **模式切换**：`/drag_teleop_{role}/teleop_mode`（position|mit|effort）、
   `/drag_teleop_{role}/teleop_feedback`（false|position|effort，仅 master）
   自定义服务，运行时可切换。
 
@@ -37,17 +37,17 @@
 | 模式 | 说明 | hardware 需求 |
 |------|------|---------------|
 | `position` | 仅位置控制，无力反馈（**仅 slave 可用**） | hardware 只需 position 命令接口 |
-| `mix` | 同时下发 position / velocity / effort 三种命令，由 hardware 内部混合并计算最终关节力矩；力反馈使用 $q_m$、$q_s$ 的误差实现 | hardware 需 position + velocity + effort 三种命令接口 |
-| `effort` | 控制器直接下发 effort | hardware 需 effort 命令接口；对 mix 型 hardware，可在启动参数指定 `hardware_joint_kp/kd:=0` 关闭位置反馈，从而实现 effort 控制 |
+| `mit` | 同时下发 position / velocity / effort 三种命令，由 hardware 内部混合并计算最终关节力矩；力反馈使用 $q_m$、$q_s$ 的误差实现 | hardware 需 position + velocity + effort 三种命令接口 |
+| `effort` | 控制器直接下发 effort | hardware 需 effort 命令接口；对 mit 型 hardware，可在启动参数指定 `hardware_joint_kp/kd:=0` 关闭位置反馈，从而实现 effort 控制 |
 
 ### role × mode 的 hardware 需求
 
 | role | mode | position 命令 | velocity 命令 | effort 命令 |
 |------|------|:---:|:---:|:---:|
-| master | mix | 仅开启力反馈时写入（当前 + Δq） | 无（写 0） | 重力补偿力矩 |
+| master | mit | 仅开启力反馈时写入（当前 + Δq） | 无（写 0） | 重力补偿力矩 |
 | master | effort | 保位（当前值） | 无（写 0） | 重力补偿力矩 + 力反馈力矩 |
 | slave | position | 目标位置（主臂） | — | — |
-| slave | mix | 目标位置（主臂） | 目标速度（主臂） | 重力补偿力矩 |
+| slave | mit | 目标位置（主臂） | 目标速度（主臂） | 重力补偿力矩 |
 | slave | effort | 保位（当前值） | 无（写 0） | 重力补偿力矩 + 位置速度跟踪力矩 |
 
 > 控制器在 `on_activate` 时按所选 `mode` 校验所需命令接口，缺失则激活失败。
@@ -56,11 +56,11 @@
 
 | 主臂 mode | 从臂 mode | 可用反馈 |
 |-----------|-----------|----------|
-| mix | position | false、position |
-| mix | mix | false、position |
-| mix | effort | false、position |
+| mit | position | false、position |
+| mit | mit | false、position |
+| mit | effort | false、position |
 | effort | position | false、position、effort（仅当从臂存在 effort 状态接口） |
-| effort | mix | false、position |
+| effort | mit | false、position |
 | effort | effort | false、position、effort（仅当从臂存在 effort 状态接口） |
 
 - `false` / `none`：无力反馈
@@ -82,35 +82,57 @@ $$\tau_{ext,slave} = \tau_{state,slave} - \tau_{model,slave}$$
 
 **slave-position**：
 
-$$q_{cmd,slave} = q_{state,master}$$
+$$
+\begin{cases}
+q_{cmd,slave} = q_{state,master}
+\end{cases}
+$$
 
-**slave-mix**：
+**slave-mit**：
 
-$$q_{cmd,slave} = q_{state,master}, \qquad \dot q_{cmd,slave} = \dot q_{state,master}$$
-
-$$\tau_{cmd,slave} = \tau_G(q_{cmd,slave})$$
+$$
+\begin{cases}
+q_{cmd,slave} = q_{state,master} \\
+\dot q_{cmd,slave} = \dot q_{state,master} \\
+\tau_{cmd,slave} = \tau_G(q_{cmd,slave})
+\end{cases}
+$$
 
 **slave-effort**：
 
-$$\tau_{imp,slave} = K_p (q_{state,master} - q_{state,slave}) + K_d (\dot q_{state,master} - \dot q_{state,slave})$$
+$$
+\tau_{imp,slave} = K_p (q_{state,master} - q_{state,slave}) + K_d (\dot q_{state,master} - \dot q_{state,slave})
+$$
 
-$$\tau_{cmd,slave} = \tau_{imp,slave} + \tau_G(q_{cmd,slave})$$
+$$
+\begin{cases}
+\tau_{cmd,slave} = \tau_{imp,slave} + \tau_G(q_{cmd,slave})
+\end{cases}
+$$
 
 ### 主臂（master）
 
 **master-\*-feedback(false)**（无力反馈）：
 
-$$q_{cmd,master} = q_{state,master}, \qquad \dot q_{cmd,master} = 0$$
+$$
+\begin{cases}
+q_{cmd,master} = q_{state,master} \\
+\dot q_{cmd,master} = 0 \\
+\tau_{cmd,master} = \tau_G(q_{state,master})
+\end{cases}
+$$
 
-$$\tau_{cmd,master} = \tau_G(q_{state,master})$$
-
-**master-mix-feedback(position)**（位置偏移，由硬件位置环产生反馈力）：
+**master-mit-feedback(position)**（位置偏移，由硬件位置环产生反馈力）：
 
 $$\Delta q_{feedback,master} = -G \cdot (q_{state,master} - q_{state,slave})$$
 
-$$q_{cmd,master} = q_{state,master} + \Delta q_{feedback,master}, \qquad \dot q_{cmd,master} = 0$$
-
-$$\tau_{cmd,master} = \tau_G(q_{state,master})$$
+$$
+\begin{cases}
+q_{cmd,master} = q_{state,master} + \Delta q_{feedback,master} \\
+\dot q_{cmd,master} = 0 \\
+\tau_{cmd,master} = \tau_G(q_{state,master})
+\end{cases}
+$$
 
 **master-effort-feedback(position)**（阻抗力矩）：
 
@@ -118,11 +140,19 @@ $$q_{cmd,master} = -G \cdot (q_{state,master} - q_{state,slave})$$
 
 $$\tau_{imp,master} = K_p (q_{cmd,master} - q_{state,slave})$$
 
-$$\tau_{cmd,master} = \tau_{imp,master} + \tau_G(q_{state,master})$$
+$$
+\begin{cases}
+\tau_{cmd,master} = \tau_{imp,master} + \tau_G(q_{state,master})
+\end{cases}
+$$
 
 **master-effort-feedback(effort)**（外部力矩反馈）：
 
-$$\tau_{cmd,master} = -G \cdot \tau_{ext,slave} + \tau_G(q_{state,master})$$
+$$
+\begin{cases}
+\tau_{cmd,master} = -G \cdot \tau_{ext,slave} + \tau_G(q_{state,master})
+\end{cases}
+$$
 
 > 符号约定：$q_{state,master}$ / $q_{state,slave}$ 为映射到同一参考系后的关节
 > 状态（发布前已映射，接收方直接使用）；$G$ 为反馈增益（`master.feedback.*.gain`），
@@ -162,19 +192,27 @@ ros2 topic echo /drag_teleop_slave/teleop_states
 
 ### 真机
 
+
 ```bash
-# master（低刚度拖动 + 外部力反馈）
+# master（低刚度拖动）
 ros2 launch drag_teleop_controller drag_teleop_controller.launch.py \
-  role:=master hardware:=real mode:=effort feedback:=effort \
-  hardware_joint_kp:="1e-5, 1e-5, 1e-5, 1e-5, 1e-5, 1e-5" \
-  hardware_joint_kd:="1e-5, 1e-5, 1e-5, 1e-5, 1e-5, 1e-5" \
+  role:=master hardware:=real mode:=effort\
+  hardware_control_mode:=effort \
   hardware_gripper_kp:="1e-5" hardware_gripper_kd:=""1e-5
 ```
 
 ```bash
-# slave（effort 模式跟随）
+# master（低刚度拖动 + 外部力反馈）
 ros2 launch drag_teleop_controller drag_teleop_controller.launch.py \
-  role:=slave hardware:=real mode:=mix
+  role:=master hardware:=real mode:=effort feedback:=effort \
+  hardware_control_mode:=effort \
+  hardware_gripper_kp:="1e-5" hardware_gripper_kd:=""1e-5
+```
+
+```bash
+# slave（mit 模式跟随）
+ros2 launch drag_teleop_controller drag_teleop_controller.launch.py \
+  role:=slave hardware:=real mode:=mit
 ```
 
 ### 模式切换
@@ -201,7 +239,7 @@ ros2 launch drag_teleop_controller drag_teleop_controller.launch.py \
 | `robot` | `panthera_ht` | 机器人名（自动寻找 `{robot}_description` 包） |
 | `type` | `dual` | `single` \| `left` \| `right` \| `dual` |
 | `hardware` | `mock_components` | `real` \| `real_usb` \| `mock_components` \| `gz` \| `isaac` |
-| `mode` | （yaml） | `position`（仅 slave）\| `mix` \| `effort` |
+| `mode` | （yaml） | `position`（仅 slave）\| `mit` \| `effort` |
 | `feedback` | （yaml） | `false` \| `position` \| `effort`（仅 master） |
 | `input_topic` | `auto` | 对侧状态话题；auto = `/drag_teleop_{对侧}/teleop_states` |
 | `moveJ_pub` | `false` | 发布 ocs2 moveJ + 夹爪命令（仅 master） |

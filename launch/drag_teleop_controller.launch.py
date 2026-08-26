@@ -24,7 +24,7 @@ Usage:
     role:=slave controller_params:=/path/to/my.yaml
 
   # hardware_/xacro_ prefixed args (same format as ocs2 demo.launch.py):
-  #   xacro_xxx:=    always applied, e.g. xacro_control_mode:=pd_control
+  #   xacro_xxx:=    always applied, e.g. xacro_control_mode:=mit
   #   hardware_xxx:= only with hardware:=real/real_usb, e.g.
   #     hardware_joint_kp:="0.01, 0.01, 0.01, 0.01, 0.01, 0.01"
   #     hardware_joint_kd:="0.1, 0.1, 0.1, 0.1, 0.1, 0.1"
@@ -43,6 +43,7 @@ from launch_ros.actions import Node
 from robot_common_launch import (
     build_xacro_mappings,
     create_robot_profile_launch_arguments,
+    create_rmw_zenohd_node,
 )
 
 
@@ -125,7 +126,7 @@ def launch_setup(context, *args, **kwargs):
     # 参照 ocs2_arm_controller demo.launch.py：用 robot_common_launch 的
     # build_xacro_mappings 统一构建 xacro mappings，自动处理 hardware_/xacro_
     # 前缀启动参数（与 OCS2 语义一致）：
-    #   xacro_xxx:=   总是生效（任何 hardware），如 xacro_control_mode:=pd_control
+    #   xacro_xxx:=   总是生效（任何 hardware），如 xacro_control_mode:=mit
     #   hardware_xxx:= 仅 hardware:=real/real_usb 生效，如 hardware_joint_kp:=
     # 以及 robot_profile 的 hardware:/xacro: 段注入。
     # kp/kd/control_mode 等硬件参数没有专用 launch 参数，统一走前缀参数。
@@ -143,6 +144,13 @@ def launch_setup(context, *args, **kwargs):
     urdf = doc.toprettyxml(indent="  ")
 
     nodes = []
+
+    # rmw_zenoh_cpp 中间件时自动启动 zenoh router（已运行则跳过；
+    # 主从同域跨机通信依赖 router，与 ocs2 demo.launch.py 行为一致）
+    rmw_zenohd_node = create_rmw_zenohd_node()
+    if rmw_zenohd_node is not None:
+        nodes.append(rmw_zenohd_node)
+
     nodes.append(LogInfo(
         msg="\n===============================================================\n"
             "[drag_teleop_controller] \n"
@@ -219,9 +227,14 @@ def launch_setup(context, *args, **kwargs):
     # Optional RViz (default off). Runs inside the same namespace so relative
     # topic names in the config ("tf", "robot_description") follow the robot.
     if rviz_enabled:
-        rviz_config = os.path.join(
-            get_package_share_directory("drag_teleop_controller"),
-            "config", "drag_teleop_controller.rviz")
+        if role == "slave" :
+            rviz_config = os.path.join(
+                get_package_share_directory("drag_teleop_controller"),
+                "config", "drag_teleop_slave.rviz")
+        elif role == "master":
+            rviz_config = os.path.join(
+                get_package_share_directory("drag_teleop_controller"),
+                "config", "drag_teleop_master.rviz")
         nodes.append(Node(
             package="rviz2",
             executable="rviz2",
@@ -247,7 +260,7 @@ def generate_launch_description():
                               description="real | real_usb | mock_components | gz | isaac",
                               choices=["real", "real_usb", "mock_components", "gz", "isaac"]),
         DeclareLaunchArgument("mode", default_value="",
-                              description="Control mode: position | mix | effort "
+                              description="Control mode: position | mit | effort "
                                           "(empty = use yaml value; position is slave-only)"),
         DeclareLaunchArgument("feedback", default_value="",
                               description="Force feedback (master only): false | position | effort "
@@ -272,7 +285,7 @@ def generate_launch_description():
                         "config/ros2_control.yaml; robot-specific symlinks "
                         "like panthera_ht_2_panthera_ht.yaml also work)"),
         # 参照 ocs2 demo.launch.py：hardware_/xacro_ 前缀参数透传（无需逐个声明）：
-        #   xacro_xxx:=   总是生效，如 xacro_control_mode:=pd_control
+        #   xacro_xxx:=   总是生效，如 xacro_control_mode:=mit
         #   hardware_xxx:= 仅 hardware:=real/real_usb 生效，如 hardware_joint_kp:=
         # kp/kd/control_mode 等硬件参数均无专用 launch 参数，统一走前缀参数。
         # robot_profile 提供 hardware:/xacro: 段（robot.local.yaml）

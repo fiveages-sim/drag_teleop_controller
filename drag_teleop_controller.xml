@@ -5,7 +5,7 @@
     <description>
       Master/slave drag teleoperation controller.
       Runs as either the master (dragged by the operator, gravity compensated)
-      or the slave (follows the master) role. Supports position / mix / effort
+      or the slave (follows the master) role. Supports position / mit / effort
       control modes and position / effort force feedback on the master side.
       Teleop states are joint-mapped before publishing; grippers are handled
       by adaptive_gripper_controller (spawned by the launch file).

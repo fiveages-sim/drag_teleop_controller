@@ -10,7 +10,7 @@
 //     tau_model = M(q)a + C(q,v)v + G(q)
 //     tau_ext   = tau_state - tau_model
 //     q_cmd     = q_ref
-//   slave-mix:
+//   slave-mit:
 //     tau_model / tau_ext as above
 //     q_cmd  = q_ref
 //     dq_cmd = dq_ref
@@ -21,7 +21,7 @@
 //     tau_ext = (has_effort_state ? tau_state : tau_cmd) - tau_model
 //   master-*-feedback(false):
 //     q_cmd = q_state, dq_cmd = 0, tau_cmd = tau_G(q_state)
-//   master-mix-feedback(position):
+//   master-mit-feedback(position):
 //     delta_q = -G * sat(e - dead_zone, max_delta_q), e = q_state - q_ref
 //     q_cmd = q_state + delta_q, dq_cmd = 0, tau_cmd = tau_G(q_state)
 //   master-effort-feedback(position):
@@ -47,7 +47,7 @@ enum class Role
 enum class ControlMode
 {
   Position,
-  Mix,
+  Mit,
   Effort,
 };
 

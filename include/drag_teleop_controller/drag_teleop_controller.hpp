@@ -99,7 +99,7 @@ private:
 
   // ---- 参数（on_init 声明） ----
   std::string role_{"master"};          // master | slave
-  std::string mode_str_{"mix"};         // position | mix | effort（on_configure 按 role 取自 master.control.mode / slave.control.type）
+  std::string mode_str_{"mit"};         // position | mit | effort（on_configure 按 role 取自 master.control.mode / slave.control.type）
   std::string feedback_str_{"false"};   // false | position | effort（取自 master.feedback.type）
   std::string input_topic_{"/drag_teleop_slave/teleop_states"};
   bool moveJ_pub_{false};               // on_configure 取自 master.ocs2_cmd.enabled
@@ -107,7 +107,7 @@ private:
   std::string urdf_param_name_{"robot_description"};
 
   // master 段
-  std::string master_control_mode_{"mix"};   // master.control.mode
+  std::string master_control_mode_{"mit"};   // master.control.mode
   std::string master_feedback_type_{"false"};  // master.feedback.type
   std::vector<std::string> master_joints_;
   std::vector<double> master_max_effort_;
@@ -118,7 +118,7 @@ private:
   bool ocs2_enabled_{false};                       // master.ocs2_cmd.enabled
 
   // slave 段
-  std::string slave_control_type_{"mix"};    // slave.control.type
+  std::string slave_control_type_{"mit"};    // slave.control.type
   std::vector<std::string> slave_joints_;
   std::vector<double> slave_max_effort_;
   std::string slave_publish_topic_{"teleop_states"};  // slave.output_topic
@@ -140,7 +140,7 @@ private:
 
   // ---- 模式（服务可切换，mutex 保护） ----
   std::mutex mode_mutex_;
-  ControlMode control_mode_{ControlMode::Mix};
+  ControlMode control_mode_{ControlMode::Mit};
   FeedbackMode feedback_mode_{FeedbackMode::None};
 
   // ---- 映射 / 动力学 ----

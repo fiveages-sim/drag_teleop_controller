@@ -69,7 +69,7 @@
         # 遥操作反馈的话题
         output_topic: teleop_states #（如果是相对名，拼接为 /<ns>/teleop_states，如果是绝对名，不拼接）
         control:
-          mode: mix # 控制模式： mix | effort
+          mode: mit # 控制模式： mit | effort
         # ---- 力反馈参数 ----
         feedback:
           type: "false"  # false | position | effort （必须加引号保持字符串类型）
@@ -104,6 +104,13 @@
               - right_joint5
               - right_joint6
             cmd_topic: /ocs2_arm_controller/target_joint_position
+          gripper:
+            joints:
+              - left_gripper_joint
+              - right_gripper_joint
+            cmd_topic:
+              - /left_gripper_joint/position_command
+              - /right_gripper_joint/position_command
         gripper:
           # 夹爪发布配置（master 侧夹爪名 → 发布话题，一一对应）
           gripper_joints: [left_gripper_joint, right_gripper_joint]
@@ -128,7 +135,7 @@
         # 遥操作反馈的话题
         output_topic: teleop_states #（如果是相对名，拼接为 /<ns>/teleop_states，如果是绝对名，不拼接）
         control:
-          type: mix # 控制模式： position | mix | effort
+          type: mit # 控制模式： position | mit | effort
           effort:  # effort 控制模式的阻抗参数
             kp: [30.0, 30.0, 30.0, 30.0, 30.0, 30.0,
                  30.0, 30.0, 30.0, 30.0, 30.0, 30.0]

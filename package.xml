@@ -8,7 +8,7 @@
     Master/slave drag teleoperation controller for Panthera HT.
     A single controller plugin that runs as either the master (dragged by the
     operator, gravity-compensated) or the slave (follows the master) role.
-    Supports position / mix / effort control modes and position / effort
+    Supports position / mit / effort control modes and position / effort
     force feedback on the master side. Joint mapping is applied before
     publishing teleop states. Grippers are controlled by
     adaptive_gripper_controller (spawned by the launch file).
@@ -36,6 +36,7 @@
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>
   <exec_depend>adaptive_gripper_controller</exec_depend>
+  <exec_depend>robot_common_launch</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 
